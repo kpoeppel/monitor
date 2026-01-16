@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "monitor"
+version = "0.1.0"
+description = "Job monitoring and state management"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "compoconf",
+]
+
+[project.optional-dependencies]
+slurm = [
+    "slurm_gen",
+]
+dev = [
+    "pytest",
+    "ruff",
+    "slurm_gen",  # Needed for tests
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=monitor --cov-report=term-missing"
