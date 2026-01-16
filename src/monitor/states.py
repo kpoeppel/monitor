@@ -23,7 +23,10 @@ class BaseMonitorState(MonitorStateInterface):
 
     @property
     def key(self) -> str:  # pragma: no cover - overridden by subclasses
-        raise NotImplementedError
+        if hasattr(self.config, "key"):
+            return self.config.key
+        else:
+            raise NotImplementedError
 
 
 @dataclass
@@ -36,10 +39,6 @@ class SuccessStateConfig(ConfigInterface):
 class SuccessState(BaseMonitorState):
     config: SuccessStateConfig
 
-    @property
-    def key(self) -> str:
-        return self.config.key
-
 
 @dataclass
 class CrashStateConfig(ConfigInterface):
@@ -50,10 +49,6 @@ class CrashStateConfig(ConfigInterface):
 @register
 class CrashState(BaseMonitorState):
     config: CrashStateConfig
-
-    @property
-    def key(self) -> str:
-        return self.config.key
 
 
 @dataclass
@@ -66,10 +61,6 @@ class StalledStateConfig(ConfigInterface):
 class StalledState(BaseMonitorState):
     config: StalledStateConfig
 
-    @property
-    def key(self) -> str:
-        return self.config.key
-
 
 @dataclass
 class TimeoutStateConfig(ConfigInterface):
@@ -80,10 +71,6 @@ class TimeoutStateConfig(ConfigInterface):
 @register
 class TimeoutState(BaseMonitorState):
     config: TimeoutStateConfig
-
-    @property
-    def key(self) -> str:
-        return self.config.key
 
 
 @dataclass
@@ -96,10 +83,6 @@ class StartedStateConfig(ConfigInterface):
 class StartedState(BaseMonitorState):
     config: StartedStateConfig
 
-    @property
-    def key(self) -> str:
-        return self.config.key
-
 
 @dataclass
 class UndefinedStateConfig(ConfigInterface):
@@ -111,10 +94,6 @@ class UndefinedStateConfig(ConfigInterface):
 class UndefinedState(BaseMonitorState):
     config: UndefinedStateConfig
 
-    @property
-    def key(self) -> str:
-        return self.config.key
-
 
 @dataclass
 class PendingStateConfig(ConfigInterface):
@@ -125,7 +104,3 @@ class PendingStateConfig(ConfigInterface):
 @register
 class PendingState(BaseMonitorState):
     config: PendingStateConfig
-
-    @property
-    def key(self) -> str:
-        return self.config.key

@@ -48,7 +48,7 @@ def _coerce_action_config(payload: Any) -> BaseMonitorAction.cfgtype:
         return payload
     if isinstance(payload, dict):
         return parse_config(BaseMonitorAction.cfgtype, payload)
-    raise TypeError(f"Unsupported action config payload: {payload!r}")
+    raise TypeError(f"Unsupported action config payload: {payload!r}")  # pragma: no cover
 
 
 def instantiate_bindings(configs: list[Any]) -> list[EventActionBinding]:

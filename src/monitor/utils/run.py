@@ -1,208 +1,155 @@
-import logging
-import signal
+"""Run utilities for the monitor package."""
+
+from __future__ import annotations
+
 import subprocess
 import sys
-import threading
 from collections.abc import Sequence
-
-LOGGER = logging.getLogger(__name__)
-
-try:  # pragma: no cover - pty only available on POSIX
-    import os
-    import pty
-except ImportError:  # pragma: no cover
-    os = None  # type: ignore
-    pty = None  # type: ignore
+from pathlib import Path
+from typing import Any
 
 
 def run_with_tee(
     args: str | Sequence[str],
     *,
-    capture_output: bool = True,
-    print_cmd: bool = True,
+    text: bool = False,
+    input: str | bytes | None = None,
     check: bool = False,
     timeout: float | None = None,
-    input: str | bytes | None = None,
-    text: bool | None = None,  # None = follow Python default; True = text mode; False = bytes
-    encoding: str | None = None,
-    errors: str | None = None,
-    env=None,
-    cwd=None,
     shell: bool = False,
-    use_pty: bool = False,
+    env: dict[str, str] | None = None,
+    cwd: str | Path | None = None,
+    capture_output: bool = True,
+    **kwargs: Any,
 ) -> subprocess.CompletedProcess:
-    """Run a command like subprocess.run but:
+    """Run command, streaming output to stdout/stderr while capturing it.
 
-      - streams stdout/stderr live to this process' stdout/stderr (tee)
-      - returns a CompletedProcess with captured stdout/stderr
-      - supports check, timeout, input, text/encoding/errors
-
-    NOTE: We always pipe child stdout/stderr to implement tee behavior.
+    Like subprocess.run but tees output to console while capturing.
     """
-
-    print("RUNNING: ", " ".join(args))
-
-    master_fd: int | None = None
-    slave_fd: int | None = None
+    # Set up pipes for capturing
+    stdout_data = []
+    stderr_data = []
 
     popen_kwargs = {
         "stdin": subprocess.PIPE if input is not None else None,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
+        "text": text,
         "env": env,
         "cwd": cwd,
         "shell": shell,
-        "text": text,
-        "encoding": encoding,
-        "errors": errors,
+        **kwargs,
     }
-
-    if use_pty:
-        if pty is None or os is None:  # pragma: no cover - non POSIX fallback
-            raise RuntimeError("PTY mode is only supported on POSIX systems")
-        master_fd, slave_fd = pty.openpty()
-        popen_kwargs["stdout"] = slave_fd
-        popen_kwargs["stderr"] = slave_fd
-        popen_kwargs["bufsize"] = 0
 
     proc = subprocess.Popen(args, **popen_kwargs)
 
-    if use_pty and slave_fd is not None:
-        os.close(slave_fd)
-
-    # Select console targets and buffers depending on text/binary mode
-    is_text = proc.stdout is not None and (text or encoding or errors) is not None or (text is True)
-    if is_text is None:  # follow Popen's actual mode
-        is_text = proc.text if hasattr(proc, "text") else False
-
-    out_buf = []
-    err_buf = []
-
-    def _forward(src, sink, buf, chunk_bytes: int = 8192):
-        if src is None:
-            return
-        if is_text:
-            for line in iter(src.readline, ""):
-                buf.append(line)
-                sink.write(line)
-                sink.flush()
-        else:
-            bsink = sink.buffer if hasattr(sink, "buffer") else sink
-            for chunk in iter(lambda: src.read(chunk_bytes), b""):
-                buf.append(chunk)
-                bsink.write(chunk)
-                bsink.flush()
-        src.close()
-
-    def _forward_pty(master: int, sink, buf, chunk_bytes: int = 1024):
-        if os is None:
-            return
-        try:
-            while True:
-                try:
-                    chunk = os.read(master, chunk_bytes)
-                except OSError:
-                    break
-                if not chunk:
-                    break
-                if is_text:
-                    text_chunk = chunk.decode(encoding or "utf-8", errors or "replace")
-                    buf.append(text_chunk)
-                    sink.write(text_chunk)
-                    sink.flush()
-                else:
-                    buf.append(chunk)
-                    bsink = sink.buffer if hasattr(sink, "buffer") else sink
-                    bsink.write(chunk)
-                    bsink.flush()
-        finally:
-            os.close(master)
-
-    if use_pty and master_fd is not None:
-        t_out = threading.Thread(target=_forward_pty, args=(master_fd, sys.stdout, out_buf))
-        t_err = None
-    else:
-        t_out = threading.Thread(target=_forward, args=(proc.stdout, sys.stdout, out_buf))
-        t_err = threading.Thread(target=_forward, args=(proc.stderr, sys.stderr, err_buf))
-
-    t_out.start()
-    if t_err is not None:
-        t_err.start()
-
-    # Write input (if any)
-    if input is not None:
-        try:
-            if is_text or isinstance(input, str):
-                data = (
-                    input
-                    if isinstance(input, str)
-                    else input.decode(encoding or "utf-8", errors or "strict")
-                )
-            else:
-                data = input if isinstance(input, (bytes, bytearray)) else str(input).encode()
-            proc.stdin.write(data)  # type: ignore[union-attr]
-        finally:
-            proc.stdin.close()  # type: ignore[union-attr]
-
     try:
-        retcode = proc.wait(timeout=timeout)
-    except subprocess.TimeoutExpired as e:
-        # Kill, finish draining, then raise with partial output
+        if input is not None:
+            if text and isinstance(input, str):
+                input_bytes = input.encode() if not text else input
+            else:
+                input_bytes = input
+            stdout, stderr = proc.communicate(input=input_bytes, timeout=timeout)
+        else:
+            stdout, stderr = proc.communicate(timeout=timeout)
+
+        # Tee output to console
+        if stdout:
+            if text:
+                sys.stdout.write(stdout)
+            else:
+                sys.stdout.buffer.write(stdout)
+            sys.stdout.flush()
+
+        if stderr:
+            if text:
+                sys.stderr.write(stderr)
+            else:
+                sys.stderr.buffer.write(stderr)
+            sys.stderr.flush()
+
+    except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
-        t_out.join()
-        if t_err is not None:
-            t_err.join()
-        captured_stdout = "".join(out_buf) if is_text else b"".join(out_buf)
-        captured_stderr = "".join(err_buf) if is_text else b"".join(err_buf)
-        e.output = captured_stdout
-        e.stderr = captured_stderr
         raise
-    except KeyboardInterrupt:
-        # Propagate SIGINT to child process so it can clean up.
-        try:
-            proc.send_signal(signal.SIGINT)
-        except ProcessLookupError:
-            pass
 
-        try:
-            retcode = proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            # escalate to SIGTERM
-            try:
-                proc.terminate()
-            except ProcessLookupError:
-                pass
-            try:
-                retcode = proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                retcode = proc.wait()
+    result = subprocess.CompletedProcess(
+        args=args,
+        returncode=proc.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
 
-        t_out.join()
-        if t_err is not None:
-            t_err.join()
-
-        captured_stdout = "".join(out_buf) if is_text else b"".join(out_buf)
-        captured_stderr = "".join(err_buf) if is_text else b"".join(err_buf)
-
-        raise KeyboardInterrupt from None
-
-    t_out.join()
-    if t_err is not None:
-        t_err.join()
-
-    captured_stdout = "".join(out_buf) if is_text else b"".join(out_buf)
-    captured_stderr = "".join(err_buf) if is_text else b"".join(err_buf)
-
-    if check and retcode != 0:
+    if check and proc.returncode != 0:
         raise subprocess.CalledProcessError(
-            retcode, args, output=captured_stdout, stderr=captured_stderr
+            proc.returncode, args, output=stdout, stderr=stderr
         )
 
-    return subprocess.CompletedProcess(
-        args=args,
-        returncode=retcode,
-        stdout=captured_stdout,
-        stderr=captured_stderr,
+    return result
+
+
+def run_with_log(
+    args: Sequence[str],
+    log_path: str | Path,
+    *,
+    env: dict[str, str] | None = None,
+    cwd: str | Path | None = None,
+) -> int:
+    """Run command, capturing output to log file while streaming to stdout.
+
+    This is the original run_with_tee behavior for backwards compatibility.
+    """
+    import os
+    import pty
+    import select
+
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    master_fd, slave_fd = pty.openpty()
+
+    process = subprocess.Popen(
+        args,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        env=env,
+        cwd=cwd,
+        close_fds=True,
     )
+
+    os.close(slave_fd)
+
+    with log_path.open("w", encoding="utf-8") as f:
+        try:
+            while process.poll() is None:
+                r, _, _ = select.select([master_fd], [], [], 0.1)
+                if master_fd in r:
+                    try:
+                        data = os.read(master_fd, 8192).decode("utf-8", errors="replace")
+                        if data:
+                            sys.stdout.write(data)
+                            sys.stdout.flush()
+                            f.write(data)
+                            f.flush()
+                    except OSError:  # pragma: no cover
+                        break
+        finally:
+            # Read remaining output
+            while True:
+                r, _, _ = select.select([master_fd], [], [], 0)
+                if master_fd not in r:
+                    break
+                try:
+                    data = os.read(master_fd, 8192).decode("utf-8", errors="replace")
+                    if not data:  # pragma: no cover
+                        break
+                    sys.stdout.write(data)
+                    sys.stdout.flush()
+                    f.write(data)
+                    f.flush()
+                except OSError:  # pragma: no cover
+                    break
+            os.close(master_fd)
+
+    return process.wait()

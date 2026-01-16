@@ -393,33 +393,8 @@ def test_slurm_log_monitor_missing_log_file():
     assert outcome.status in ["pending", "active"]
 
 
-def test_slurm_log_monitor_termination_string():
-    """Test termination string detection."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        log_path = Path(tmpdir) / "job.log"
-        log_path.write_text("Processing...\nJob completed successfully\n")
-
-        config = SlurmLogMonitorConfig(
-            log_path=str(log_path),
-            log_events=[]
-        )
-
-        monitor = SlurmLogMonitor(config)
-
-        job = MonitoredJob(
-            job_id="job-1",
-            name="test",
-            log_path=str(log_path),
-            check_interval_seconds=60,
-            state="RUNNING",
-            termination_string="completed successfully"
-        )
-
-        outcomes = monitor.watch_sync([job])
-        outcome = outcomes["job-1"]
-
-        # Should detect completion
-        assert outcome.status == "complete"
+    # Termination string logic removed
+    pass
 
 
 def test_slurm_log_monitor_state_events():

@@ -2,6 +2,36 @@
 
 A library for monitoring job execution state and triggering actions based on events.
 
+## Workflow
+
+The monitoring workflow is managed by a few key components that separate the concerns of job submission, observation, and execution.
+
+1.  **`SubmissionManager`**:
+    *   **Role**: Handles the initial registration of jobs and maintains their state.
+    *   **Functionality**: When a job is registered, the `SubmissionManager` tracks its `JobRuntimeState` (ID, name, attempts, etc.) and persists this information to a `MonitorStateStore` for crash recovery.
+
+2.  **`SlurmLogMonitor` (Watcher)**:
+    *   **Role**: Observes the system for events.
+    *   **Functionality**: This component watches log files for specific patterns (e.g., errors, completion markers) and checks the SLURM queue for job status changes. It generates `MonitorEvent` objects when something noteworthy occurs.
+
+3.  **`MonitorController`**:
+    *   **Role**: The central coordinator that orchestrates the workflow.
+    *   **Functionality**: In its main observation loop (`observe_once_sync`), the controller:
+        *   Gathers job information from the `SubmissionManager`.
+        *   Asks the `Watcher` to check for events related to those jobs.
+        *   Receives `MonitorEvent` objects from the watcher.
+        *   Classifies the overall state of each job (e.g., `running`, `stall`, `crash`).
+        *   Delegates the handling of these events and state changes to the `Executor`.
+
+4.  **`Executor`**:
+    *   **Role**: Acts on the decisions made by the controller.
+    *   **Functionality**: Based on the events, the `Executor` performs actions such as:
+        *   Restarting a job (`restart_job`), which includes waiting for any defined `start_condition`.
+        *   Stopping a job.
+        *   Marking a job as successfully completed.
+
+This separation ensures that job state is cleanly managed, monitoring logic is isolated, and execution actions are handled by a dedicated component.
+
 ## Features
 
 - **State Machine**: Track job states (Pending, Started, Stalled, Crash, Success, Timeout).

@@ -1,8 +1,22 @@
 import pytest
 from unittest.mock import MagicMock
-from monitor.controller import MonitorController, JobRegistration, MonitorOutcome
+from monitor.controller import MonitorController, MonitorOutcome
+from monitor.submission import JobRegistration
 from monitor.watcher import BaseMonitor, MonitorEvent
-from slurm_gen.client import BaseSlurmClient
+
+# Define a simple class to use as a spec
+class BaseSlurmClient:
+    def squeue(self):
+        pass
+    
+    def submit(self, name, script, log):
+        return "job-123"
+
+    def cancel(self, job_id):
+        pass
+
+    def remove(self, job_id):
+        pass
 
 def test_controller_register_job():
     monitor = MagicMock(spec=BaseMonitor)
@@ -42,6 +56,7 @@ def test_controller_observe_once():
     
     slurm = MagicMock(spec=BaseSlurmClient)
     slurm.squeue.return_value = {"job-123": "RUNNING"}
+    slurm.submit.return_value = "job-123"
     
     controller = MonitorController(monitor, slurm)
     registration = JobRegistration(name="test", script_path="s", log_path="l")
@@ -49,7 +64,8 @@ def test_controller_observe_once():
     
     result = controller.observe_once_sync()
     
-    assert "job-123" in controller._jobs
+    jobs_map = {j.job_id: j for j in controller.jobs()}
+    assert "job-123" in jobs_map
     monitor.watch_sync.assert_called_once()
     slurm.squeue.assert_called_once()
     

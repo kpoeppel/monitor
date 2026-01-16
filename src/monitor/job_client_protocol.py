@@ -18,7 +18,7 @@ class JobClientProtocol(Protocol):
     allowing monitor to work with SLURM, local processes, or other batch systems.
     """
 
-    def submit(self, name: str, script_path: str, log_path: str) -> str:
+    def submit(self, name: str, script_path: str, log_path: str) -> str:  # pragma: no cover
         """Submit a single job.
 
         Args:
@@ -40,7 +40,7 @@ class JobClientProtocol(Protocol):
         script_path: str,
         log_paths: list[str],
         task_names: list[str],
-    ) -> list[str]:
+    ) -> list[str]:  # pragma: no cover
         """Submit an array of jobs (multiple instances of same script).
 
         Args:
@@ -57,7 +57,7 @@ class JobClientProtocol(Protocol):
         """
         ...
 
-    def cancel(self, job_id: str) -> None:
+    def cancel(self, job_id: str) -> None:  # pragma: no cover
         """Cancel/terminate a running or pending job.
 
         Args:
@@ -65,7 +65,7 @@ class JobClientProtocol(Protocol):
         """
         ...
 
-    def remove(self, job_id: str) -> None:
+    def remove(self, job_id: str) -> None:  # pragma: no cover
         """Remove a job from tracking.
 
         This is used to clean up finished jobs from the client's internal state.
@@ -75,7 +75,7 @@ class JobClientProtocol(Protocol):
         """
         ...
 
-    def squeue(self) -> dict[str, str]:
+    def squeue(self) -> dict[str, str]:  # pragma: no cover
         """Query the status of all tracked jobs.
 
         Returns:
@@ -84,7 +84,7 @@ class JobClientProtocol(Protocol):
         """
         ...
 
-    def job_ids_by_name(self, name: str) -> list[str]:
+    def job_ids_by_name(self, name: str) -> list[str]:  # pragma: no cover
         """Get all job IDs matching a given name.
 
         Args:
@@ -95,7 +95,7 @@ class JobClientProtocol(Protocol):
         """
         ...
 
-    def get_job(self, job_id: str):
+    def get_job(self, job_id: str):  # pragma: no cover
         """Get detailed information about a specific job.
 
         Args:
