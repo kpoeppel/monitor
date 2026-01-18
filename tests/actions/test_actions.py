@@ -1,160 +1,118 @@
-import pytest
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from __future__ import annotations
+
+import subprocess
+
 from monitor.actions import (
     ActionContext,
-    RunCommandAction, RunCommandActionConfig,
-    RestartAction, RestartActionConfig,
-    DuplicateAction, DuplicateActionConfig,
-    FinishAction, FinishActionConfig,
-    CancelAction, CancelActionConfig,
-    LogAction, LogActionConfig,
-    ActionResult,
-    replace_braced_keys,
+    DuplicateAction,
+    DuplicateActionConfig,
+    ActionBackendConfig,
+    LogAction,
+    LogActionConfig,
+    LocalActionBackendConfig,
+    RestartAction,
+    RestartActionConfig,
+    RunCommandAction,
+    RunCommandActionConfig,
+    CancelAction,
+    CancelActionConfig,
+    SlurmActionBackendConfig,
+    EventRecord,
 )
-from monitor.events import EventRecord, EventStatus
 
-@pytest.fixture
-def mock_event():
-    return EventRecord(
-        event_id="evt-1",
-        name="test_event",
-        source="test_source",
-        metadata={"job_id": "123"},
-        payload={"value": "foo"}
+
+def _context() -> ActionContext:
+    event = EventRecord(event_id="evt1", name="evt", source="log")
+    return ActionContext(event=event, job_metadata={"job_kind": "local", "job_name": "job1"})
+
+
+def test_restart_action_adjustments() -> None:
+    action = RestartAction(
+        RestartActionConfig(
+            reason="oom",
+            extra_args_append=["--retry={attempts}"],
+            backend_config=LocalActionBackendConfig(),
+        )
     )
-
-def test_replace_braced_keys():
-    values = {"a": 1, "b": "two"}
-    assert replace_braced_keys("Val: {a}", values) == "Val: 1"
-    assert replace_braced_keys("{a}-{b}", values) == "1-two"
-    assert replace_braced_keys("{missing}", values) == "{missing}"
-    assert replace_braced_keys("No braces", values) == "No braces"
-
-def test_action_context_render(mock_event):
-    context = ActionContext(
-        event=mock_event,
-        job_metadata={"cluster": "juwels"}
-    )
-    
-    assert context.render("Job: {job_id}") == "Job: 123"
-    assert context.render("Val: {value}") == "Val: foo"
-    assert context.render("Cluster: {cluster}") == "Cluster: juwels"
-    assert context.render("Event: {event_name}") == "Event: test_event"
-
-@patch("monitor.actions.subprocess.run")
-def test_run_command_action_success(mock_run, mock_event):
-    mock_run.return_value = MagicMock(returncode=0, stdout="done", stderr="")
-    
-    config = RunCommandActionConfig(
-        command=["echo", "{job_id}"],
-        cwd="/tmp"
-    )
-    action = RunCommandAction(config)
-    context = ActionContext(event=mock_event)
-    
-    result = action.execute(context)
-    
-    assert result.status == "success"
-    assert result.message == "command completed"
-    
-    mock_run.assert_called_once()
-    args, kwargs = mock_run.call_args
-    assert args[0] == ["echo", "123"]
-    assert kwargs["cwd"] == "/tmp"
-
-@patch("monitor.actions.subprocess.run")
-def test_run_command_action_failure(mock_run, mock_event):
-    mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
-    
-    config = RunCommandActionConfig(
-        command=["ls", "nonexistent"]
-    )
-    action = RunCommandAction(config)
-    context = ActionContext(event=mock_event)
-    
-    result = action.execute(context)
-    
-    assert result.status == "failed"
-    assert "command exited 1" in result.message
-    assert result.metadata["stderr"] == "error"
-
-def test_run_command_action_empty(mock_event):
-    config = RunCommandActionConfig(command=[])
-    action = RunCommandAction(config)
-    context = ActionContext(event=mock_event)
-    result = action.execute(context)
-    assert result.status == "failed"
-    assert "command is empty" in result.message
-
-def test_restart_action(mock_event):
-    config = RestartActionConfig(reason="bad state", extra_args=["--lr=0.1"])
-    action = RestartAction(config)
-    context = ActionContext(event=mock_event)
-    
+    context = _context()
+    context.attempts = 2
     result = action.execute(context)
     assert result.status == "retry"
-    assert result.message == "bad state"
-    assert result.metadata["adjustments"]["extra_args"] == ["--lr=0.1"]
-
-def test_log_action(mock_event):
-    config = LogActionConfig(message="Job {job_id} encountered issue")
-    action = LogAction(config)
-    context = ActionContext(event=mock_event)
-    
-    result = action.execute(context)
-    assert result.status == "success"
-    assert result.message == "Job 123 encountered issue"
+    assert result.metadata["adjustments"]["extra_args_append"] == ["--retry=2"]
 
 
-def test_duplicate_action(mock_event):
-    config = DuplicateActionConfig(
-        extra_args=["--tag={job_id}"],
-        name_suffix="-copy",
-        log_path_current="latest-{job_id}.log",
+def test_duplicate_action_payload() -> None:
+    action = DuplicateAction(
+        DuplicateActionConfig(
+            name_suffix="-copy",
+            backend_config=LocalActionBackendConfig(),
+        )
     )
-    action = DuplicateAction(config)
-    context = ActionContext(event=mock_event)
-
-    result = action.execute(context)
+    result = action.execute(_context())
     assert result.status == "success"
     duplicate = result.metadata["duplicate_job"]
     assert duplicate["name_suffix"] == "-copy"
-    assert duplicate["adjustments"]["extra_args"] == ["--tag=123"]
-    assert duplicate["adjustments"]["log_path_current"] == "latest-123.log"
-
-def test_update_event_status(mock_event):
-    action = RestartAction(RestartActionConfig())
-    
-    # Success
-    action.update_event(mock_event, ActionResult(status="success", message="done"))
-    assert mock_event.status == EventStatus.PROCESSED
-    assert mock_event.history[-1]["note"] == "done"
-    
-    # Failed
-    action.update_event(mock_event, ActionResult(status="failed", message="err"))
-    assert mock_event.status == EventStatus.FAILED
-    assert mock_event.history[-1]["note"] == "err"
-    
-    # Retry/Other
-    action.update_event(mock_event, ActionResult(status="retry", message="try again"))
-    assert mock_event.status == EventStatus.PENDING
-    assert mock_event.history[-1]["note"] == "try again"
 
 
-def test_finish_action(mock_event):
-    action = FinishAction(FinishActionConfig(reason="done"))
-    context = ActionContext(event=mock_event)
-    result = action.execute(context)
+def test_log_action_renders_message() -> None:
+    action = LogAction(LogActionConfig(message="event {event_name}"))
+    result = action.execute(_context())
     assert result.status == "success"
-    assert result.metadata["finalize"] == "success"
-    assert result.message == "done"
+    assert result.message == "event evt"
 
 
-def test_cancel_action(mock_event):
-    action = CancelAction(CancelActionConfig(reason="stop"))
-    context = ActionContext(event=mock_event)
-    result = action.execute(context)
+def test_run_command_action_success() -> None:
+    action = RunCommandAction(RunCommandActionConfig(command=["bash", "-c", "echo ok"]))
+    result = action.execute(_context())
     assert result.status == "success"
-    assert result.metadata["finalize"] == "cancel"
-    assert result.message == "stop"
+
+
+def test_run_command_action_failure() -> None:
+    action = RunCommandAction(RunCommandActionConfig(command=["bash", "-c", "exit 1"]))
+    result = action.execute(_context())
+    assert result.status == "failed"
+
+
+def test_restart_action_backend_mismatch() -> None:
+    action = RestartAction(
+        RestartActionConfig(
+            reason="slurm-only",
+            backend_config=SlurmActionBackendConfig(),
+        )
+    )
+    result = action.execute(_context())
+    assert result.status == "failed"
+
+
+def test_ensure_backend_allow_any_kind() -> None:
+    action = RestartAction(
+        RestartActionConfig(
+            reason="any",
+            backend_config=ActionBackendConfig(),
+        )
+    )
+    result = action.execute(_context())
+    assert result.status == "retry"
+
+
+def test_run_command_action_empty_command() -> None:
+    action = RunCommandAction(RunCommandActionConfig(command=[]))
+    result = action.execute(_context())
+    assert result.status == "failed"
+
+
+def test_run_command_action_exception(monkeypatch) -> None:
+    def boom(*args, **kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    action = RunCommandAction(RunCommandActionConfig(command=["bash", "-c", "echo ok"]))
+    result = action.execute(_context())
+    assert result.status == "failed"
+    assert "Command execution error" in result.message
+
+
+def test_cancel_action_backend_mismatch() -> None:
+    action = CancelAction(CancelActionConfig(backend_config=SlurmActionBackendConfig()))
+    result = action.execute(_context())
+    assert result.status == "failed"

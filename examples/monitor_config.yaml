@@ -1,6 +1,8 @@
 monitor:
-  class_name: SlurmLogMonitor
+  class_name: MonitorLoop
   poll_interval_seconds: 1
+
+state_store_dir: "./state"
 
 jobs:
   - job_id: job1
@@ -15,9 +17,6 @@ jobs:
           name: ready
           pattern: READY
           pattern_type: substring
-          state:
-            class_name: StartedState
-          mode: inline
           action:
             class_name: LogAction
             message: "job {job_name} is ready"
@@ -25,9 +24,6 @@ jobs:
           name: oom
           pattern: "CUDA out of memory"
           pattern_type: substring
-          state:
-            class_name: CrashState
-          mode: inline
           action:
             class_name: RestartAction
             reason: "oom"
@@ -35,15 +31,15 @@ jobs:
               - "--retry={attempts}"
             backend_config:
               class_name: LocalActionBackend
-      state_events:
-        - class_name: StateEvent
-          name: crash
-          state:
-            class_name: CrashState
-          mode: inline
+        - class_name: LogEvent
+          name: duplicate
+          pattern: "DUPLICATE_JOB"
+          pattern_type: substring
           action:
-            class_name: LogAction
-            message: "job {job_name} crashed"
+            class_name: DuplicateAction
+            name_suffix: "-copy"
+            backend_config:
+              class_name: LocalActionBackend
   - job_id: job2
     registration:
       class_name: LocalJobRegistration

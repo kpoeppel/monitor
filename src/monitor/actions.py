@@ -1,12 +1,16 @@
-"""Actions triggered by monitor events."""
+"""Actions and event definitions for monitor."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
+from enum import Enum
 from pathlib import Path
-import subprocess
-from typing import Any, Literal
+import hashlib
+import json
 import logging
+import subprocess
+import time
+from typing import Any, Literal
 
 from compoconf import (
     ConfigInterface,
@@ -16,10 +20,78 @@ from compoconf import (
     register_interface,
 )
 
-from monitor.events import EventRecord, ActionResult, EventStatus
+from monitor.conditions import MonitorConditionInterface
 from monitor.utils.template import replace_braced_keys
+from slurm_gen import SlurmConfig
 
 LOGGER = logging.getLogger(__name__)
+
+
+class EventStatus(Enum):
+    """Lifecycle status of a detected event."""
+
+    PENDING = "pending"
+    PROCESSED = "processed"
+    FAILED = "failed"
+
+
+@dataclass(kw_only=True)
+class EventRecord:
+    """Persistent record of a detected event and its action history."""
+
+    event_id: str
+    name: str
+    source: str
+    status: EventStatus = EventStatus.PENDING
+    count: int = 1
+    first_seen_ts: float = field(default_factory=time.time)
+    last_seen_ts: float = field(default_factory=time.time)
+    payload: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    history: list[dict[str, Any]] = field(default_factory=list)
+
+    def touch(self, *, payload: dict[str, Any] | None = None) -> None:
+        """Increment the occurrence counter and update timestamps."""
+        self.count += 1
+        self.last_seen_ts = time.time()
+        if payload:
+            self.payload.update(payload)
+
+    def set_status(self, status: EventStatus, *, note: str | None = None) -> None:
+        """Move event into a new lifecycle state and append optional note."""
+        self.status = status
+        self.last_seen_ts = time.time()
+        if note:
+            self.history.append({"ts": self.last_seen_ts, "status": status.value, "note": note})  # pragma: no cover
+
+
+@dataclass(kw_only=True)
+class ActionResult:
+    """Outcome of an action execution."""
+
+    status: str  # success, retry, failed
+    message: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def event_key(job_id: str, event_name: str, metadata: dict[str, Any] | None = None) -> tuple[str, str]:
+    h = hashlib.md5()
+    h.update(json.dumps(metadata).encode("utf8"))
+    h = str(h.digest())[:16]
+    return (str(job_id), event_name, h)
+
+
+def build_event_id(
+    job_id: str,
+    event_name: str,
+    metadata: dict[str, Any] | None = None,
+    *,
+    now_ms: int | None = None,
+) -> str:
+    timestamp = int(time.time() * 1000) if now_ms is None else now_ms
+    if metadata and "checkpoint_iteration" in metadata:
+        return f"{job_id}:{event_name}:{metadata['checkpoint_iteration']}:{timestamp}"
+    return f"{job_id}:{event_name}:{timestamp}"
 
 
 @dataclass(kw_only=True)
@@ -37,6 +109,7 @@ class ActionContext:
         merged.update(self.event.payload)
         merged.setdefault("event_id", self.event.event_id)
         merged.setdefault("event_name", self.event.name)
+        merged.setdefault("attempts", self.attempts)
         if self.workspace:
             merged.setdefault("workspace", str(self.workspace))
         return merged
@@ -141,29 +214,29 @@ class ActionBackendInterface(RegistrableConfigInterface):
 
 
 @dataclass
-class BaseActionBackendConfig(ConfigInterface):
+class ActionBackendConfig(ConfigInterface):
     class_name: str = "ActionBackend"
     job_kind: str = ""
 
 
 @dataclass
-class LocalActionBackendConfig(BaseActionBackendConfig):
+class LocalActionBackendConfig(ActionBackendConfig):
     class_name: str = "LocalActionBackend"
     job_kind: str = "local"
 
 
 @dataclass
-class SlurmActionBackendConfig(BaseActionBackendConfig):
+class SlurmActionBackendConfig(ActionBackendConfig):
     class_name: str = "SlurmActionBackend"
     job_kind: str = "slurm"
-    slurm: dict[str, Any] | None = None
+    slurm: SlurmConfig | None = None
 
 
 @register
 class ActionBackend(ActionBackendInterface):
-    config: BaseActionBackendConfig
+    config: ActionBackendConfig
 
-    def __init__(self, config: BaseActionBackendConfig) -> None:
+    def __init__(self, config: ActionBackendConfig) -> None:
         self.config = config
 
 
@@ -192,8 +265,6 @@ class BaseRestartActionConfig(ConfigInterface):
     extra_args: list[str] | None = None
     extra_args_append: list[str] | None = None
     metadata: dict[str, Any] | None = None
-    output_paths: list[str] | None = None
-    inactivity_threshold_seconds: float | None = None
     log_to_file: bool | None = None
     backend_config: ActionBackendInterface.cfgtype | None = None
 
@@ -246,10 +317,6 @@ def _build_adjustments(
         adjustments["extra_args_append"] = [context.render(arg) for arg in config.extra_args_append]
     if config.metadata is not None:
         adjustments["metadata"] = _render_adjustment_value(config.metadata, context)
-    if config.output_paths is not None:
-        adjustments["output_paths"] = [context.render(path) for path in config.output_paths]
-    if config.inactivity_threshold_seconds is not None:
-        adjustments["inactivity_threshold_seconds"] = config.inactivity_threshold_seconds
     if config.log_to_file is not None:
         adjustments["log_to_file"] = config.log_to_file
     backend_config = _coerce_backend_config(getattr(config, "backend_config", None))
@@ -279,7 +346,7 @@ def _ensure_backend(
 
 def _coerce_backend_config(
     backend_config: ActionBackendInterface.cfgtype | None,
-) -> BaseActionBackendConfig | None:
+) -> ActionBackendConfig | None:
     if backend_config is None:
         return None
     if isinstance(backend_config, dict):
@@ -296,8 +363,6 @@ class BaseDuplicateActionConfig(ConfigInterface):
     extra_args: list[str] | None = None
     extra_args_append: list[str] | None = None
     metadata: dict[str, Any] | None = None
-    output_paths: list[str] | None = None
-    inactivity_threshold_seconds: float | None = None
     log_to_file: bool | None = None
     backend_config: ActionBackendInterface.cfgtype | None = None
 
@@ -368,11 +433,104 @@ class CancelAction(BaseMonitorAction):
         )
 
 
+@dataclass(kw_only=True)
+class EventActionConfig(ConfigInterface):
+    """Single event/action specification (used by concrete event configs)."""
+
+    action: BaseMonitorAction.cfgtype | None = None
+    conditions: list[MonitorConditionInterface.cfgtype] = field(default_factory=list)
+    action_id: str | None = None
+
+
+@dataclass
+class LogEventConfig(EventActionConfig):
+    """Configuration for a log-triggered event and action."""
+
+    class_name: str = "LogEvent"
+    name: str = ""
+    pattern: str = ""
+    pattern_type: Literal["substring", "regex"] = "substring"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    extract_groups: dict[str, int | str] = field(default_factory=dict)
+
+
+@dataclass
+class EventActionBinding:
+    """Runtime binding used by the monitor loop."""
+
+    action: BaseMonitorAction
+    conditions: list[MonitorConditionInterface]
+    action_id: str
+
+
+def _coerce_action_config(payload: Any) -> BaseMonitorAction.cfgtype:
+    if hasattr(payload, "instantiate"):
+        return payload
+    if isinstance(payload, dict):
+        return parse_config(BaseMonitorAction.cfgtype, payload)
+    raise TypeError(f"Unsupported action config payload: {payload!r}")  # pragma: no cover
+
+
+def _coerce_condition_config(payload: Any) -> MonitorConditionInterface.cfgtype:
+    if hasattr(payload, "instantiate"):
+        return payload
+    if isinstance(payload, dict):
+        return parse_config(MonitorConditionInterface.cfgtype, payload)
+    raise TypeError(f"Unsupported condition config payload: {payload!r}")  # pragma: no cover
+
+
+def _build_action_id(
+    *,
+    action_name: str,
+    event_name: str,
+    kind: str,
+    index: int,
+    explicit: str | None = None,
+) -> str:
+    if explicit:
+        return explicit
+    return f"{kind}:{event_name}:{action_name}:{index}"
+
+
+def instantiate_action_binding(
+    config: EventActionConfig,
+    *,
+    event_name: str,
+    kind: str,
+    index: int,
+) -> EventActionBinding:
+    if config.action is None:
+        raise ValueError("EventActionConfig requires 'action'")
+    action_cfg = _coerce_action_config(config.action)
+    action = action_cfg.instantiate(BaseMonitorAction)
+    conditions = [
+        _coerce_condition_config(condition).instantiate(MonitorConditionInterface)
+        for condition in config.conditions
+    ]
+    action_id = _build_action_id(
+        action_name=action.config.class_name,
+        event_name=event_name,
+        kind=kind,
+        index=index,
+        explicit=config.action_id,
+    )
+    return EventActionBinding(
+        action=action,
+        conditions=conditions,
+        action_id=action_id,
+    )
+
+
 __all__ = [
-    "ActionContext",
+    "EventStatus",
+    "EventRecord",
     "ActionResult",
+    "event_key",
+    "build_event_id",
+    "ActionContext",
     "BaseMonitorAction",
     "ActionBackendInterface",
+    "ActionBackendConfig",
     "LocalActionBackendConfig",
     "SlurmActionBackendConfig",
     "ActionBackend",
@@ -388,4 +546,8 @@ __all__ = [
     "CancelActionConfig",
     "CancelAction",
     "RunCommandAction",
+    "EventActionConfig",
+    "LogEventConfig",
+    "EventActionBinding",
+    "instantiate_action_binding",
 ]

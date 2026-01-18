@@ -15,48 +15,19 @@ slurm_gen_path = ROOT / "slurm_gen" / "src"
 if slurm_gen_path.exists():
     sys.path.insert(0, str(slurm_gen_path))
 
-from monitor.persistence import MonitorStateStore
+from compoconf import parse_config
+
+from monitor.loop import JobFileStore, JobRecordConfig
+from monitor import actions, conditions, submission  # noqa: F401
 
 
-def _load_config(store: MonitorStateStore) -> dict[str, Any]:
-    payload = store.load_config()
-    if payload is None:
-        raise FileNotFoundError("No config.json found in state dir")
-    return payload
+def submit_job(store: JobFileStore, payload: dict[str, Any]) -> None:
+    record = parse_config(JobRecordConfig, payload)
+    store.upsert(record)
 
 
-def _save_config(store: MonitorStateStore, payload: dict[str, Any]) -> None:
-    store.save_config(payload)
-
-
-def _ensure_jobs_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    jobs = payload.get("jobs")
-    if jobs is None:
-        jobs = []
-        payload["jobs"] = jobs
-    if not isinstance(jobs, list):
-        raise ValueError("config.jobs is not a list")
-    return jobs
-
-
-def submit_job(store: MonitorStateStore, payload: dict[str, Any]) -> None:
-    config = _load_config(store)
-    jobs = _ensure_jobs_list(config)
-    job_id = payload.get("job_id")
-    if not job_id:
-        raise ValueError("payload missing job_id")
-    jobs = [job for job in jobs if str(job.get("job_id")) != str(job_id)]
-    jobs.append(payload)
-    config["jobs"] = jobs
-    _save_config(store, config)
-
-
-def cancel_job(store: MonitorStateStore, job_id: str) -> None:
-    config = _load_config(store)
-    jobs = _ensure_jobs_list(config)
-    jobs = [job for job in jobs if str(job.get("job_id")) != str(job_id)]
-    config["jobs"] = jobs
-    _save_config(store, config)
+def cancel_job(store: JobFileStore, job_id: str) -> None:
+    store.remove(job_id)
 
 
 def main() -> None:
@@ -74,7 +45,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    store = MonitorStateStore(Path(args.state_dir))
+    store = JobFileStore(Path(args.state_dir))
 
     if args.command == "submit":
         job_path = args.job_json or args.job_yaml

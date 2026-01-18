@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a monitor/controller loop from a YAML config."""
+"""Run a monitor loop from a YAML config."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ slurm_gen_path = ROOT / "slurm_gen" / "src"
 if slurm_gen_path.exists():
     sys.path.insert(0, str(slurm_gen_path))
 
-from monitor.app import build_controller, load_app_config, parse_app_config, sync_controller
+from monitor.app import build_loop, load_app_config, sync_loop
 
 
 def main() -> None:
@@ -43,11 +43,11 @@ def main() -> None:
     if args.state_dir:
         app_config.state_store_dir = args.state_dir
 
-    controller = build_controller(app_config)
+    loop = build_loop(app_config)
 
     poll_seconds = app_config.run.sleep_seconds
     if poll_seconds is None:
-        poll_seconds = getattr(controller._monitor.config, "poll_interval_seconds", 60.0)
+        poll_seconds = loop.poll_interval_seconds
 
     last_mtime = config_path.stat().st_mtime
     cycles = 0
@@ -60,9 +60,9 @@ def main() -> None:
             app_config = load_app_config(config_path)
             if args.state_dir:
                 app_config.state_store_dir = args.state_dir
-            sync_controller(controller, app_config)
+            sync_loop(loop, app_config)
             last_mtime = current_mtime
-        controller.observe_once_sync()
+        loop.observe_once()
         cycles += 1
         if args.once or app_config.run.max_cycles == 1:
             break

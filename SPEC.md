@@ -1,39 +1,76 @@
 # Monitor Specification
 
 ## Goals
-- Provide a reliable state machine for long-running jobs.
-- Decouple monitoring logic from job submission.
-- Support resume/recovery via persistence.
+- Monitor jobs via log patterns and execute actions inline.
+- Keep state recoverable with a simple, inspectable layout.
+- Support local and SLURM backends with minimal configuration surface.
 
-## Components
+## Core Concepts
 
-### Controller (`controller.py`)
-- Main entry point.
-- Coordinates between `BaseMonitor` (log watcher) and `BaseSlurmClient` (queue checker).
-- Manages the lifecycle of `JobRuntimeState`.
+### MonitorLoop (`src/monitor/loop.py`)
+- Synchronous loop; each cycle:
+  - Loads all `*.job.json` files from the state directory.
+  - Evaluates start/cancel/finish conditions.
+  - Submits or cancels jobs via a `JobClientProtocol`.
+  - Scans log files for `LogEventConfig` matches.
+  - Executes actions inline.
 
-### Watcher (`watcher.py`)
-- Generic file-based monitoring.
-- Can check for specific patterns in log files.
-- Log/inactivity/state events are configured per job via `JobRegistration`. Monitor config only carries the poll interval.
+### JobFileStore
+- One file per job (`{job_id}.job.json`) in `state_dir`.
+- Each file stores a `JobRecordConfig`:
+  - `registration`: static job definition.
+  - `runtime`: attempts, job id, cursor, action condition state, etc.
 
-### Action Queue (`action_queue.py`)
-- File-backed queue for deferred action execution.
-- Stores one JSON file per queued action under event-named directories.
-- Status lifecycle: `pending` -> `running` -> `done`/`failed`.
-- Recovery: on startup, `running` entries are reset to `pending` for reprocessing.
+### JobRegistrationConfig (`src/monitor/submission.py`)
+- Per-job configuration:
+  - `name`, `command`, `log_path`, `log_path_current`
+  - `log_events` (list of `LogEventConfig`)
+  - `start_condition`, `cancel_condition`, `finish_condition`
+  - `slurm` (optional)
 
-### Persistence (`persistence/`)
-- `MonitorStateStore`: Saves job state to disk (JSON/SQLite).
-- Uses atomic writes to avoid partial state files on crash.
-- Schema versioning: records include `schema_version` (current: `1`); unknown versions should be treated as best-effort compatible.
+### LogEventConfig (`src/monitor/actions.py`)
+- Defines a log pattern and a single action to execute.
+- Includes optional action conditions via `conditions`.
 
-### Actions (`actions.py`)
-- Triggerable actions like "stop", "restart", "email".
-- `RestartAction` may include `adjustments` (e.g., `command`, `log_path`, `extra_args`) applied before resubmission.
-- `DuplicateAction` requests a new job instance with optional adjustments; duplicate jobs should use unique `log_path`.
+### Actions (`src/monitor/actions.py`)
+- `LogAction`, `RunCommandAction`, `RestartAction`, `DuplicateAction`,
+  `CancelAction`, `FinishAction`.
+- Restart/duplicate actions emit adjustments for re-submission.
+- Backend-specific behavior is gated via `backend_config` and `job_kind`.
 
-### Log Paths
-- `log_path` may be a template (e.g., `%j`) and is not overwritten on resubmission.
-- Local execution supports `%t` for a submission timestamp, resolved when the command starts.
-- `log_path_current` is a stable symlink path updated on submission to point at the resolved `log_path`.
+### Conditions (`src/monitor/conditions.py`)
+- Always boolean (`passed: bool`).
+- Use `TimeoutCondition` for deadline gating.
+- `persistent_pass` / `persistent_fail` latch outcomes per action.
+
+## Log Paths
+- `log_path` may include `%j` (job id) and `%t` (submission timestamp).
+- `log_path_current` is a stable symlink updated on submission.
+
+## State Layout
+- `state_dir/{job_id}.job.json`
+- No separate event or queue folders.
+
+## YAML Shape (Job)
+
+```yaml
+job_id: "job1"
+registration:
+  class_name: LocalJobRegistration
+  name: job1
+  command: ["bash", "./job1.sh"]
+  log_path: "./logs/job1_%t.log"
+  log_path_current: "./logs/job1_latest.log"
+  log_events:
+    - class_name: LogEvent
+      name: oom
+      pattern: "CUDA out of memory"
+      action:
+        class_name: RestartAction
+        reason: "oom"
+```
+
+## Backends
+- `LocalCommandClient` executes processes locally.
+- `SlurmGenClient` renders sbatch scripts via `slurm_gen` and submits with a
+  configured SLURM client.

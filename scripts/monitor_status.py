@@ -14,7 +14,8 @@ slurm_gen_path = ROOT / "slurm_gen" / "src"
 if slurm_gen_path.exists():
     sys.path.insert(0, str(slurm_gen_path))
 
-from monitor.persistence import MonitorStateStore
+from monitor.loop import JobFileStore
+from monitor import actions, conditions, submission  # noqa: F401
 
 
 def main() -> None:
@@ -23,31 +24,21 @@ def main() -> None:
     parser.add_argument("--json", action="store_true", help="Emit JSON instead of text.")
     args = parser.parse_args()
 
-    store = MonitorStateStore(Path(args.state_dir))
-    jobs = store.load_jobs()
-    events = store.load_events()
+    store = JobFileStore(Path(args.state_dir))
+    jobs = store.load_all()
 
     payload = {
         "jobs": [
             {
                 "job_id": job.job_id,
-                "name": job.name,
-                "attempts": job.attempts,
-                "submitted": job.submitted,
-                "slurm_state": job.slurm_state,
-                "monitor_state": job.monitor_state,
-                "log_path": job.log_path,
+                "name": job.registration.name if job.registration else "",
+                "attempts": job.runtime.attempts,
+                "submitted": job.runtime.submitted,
+                "runtime_job_id": job.runtime.runtime_job_id,
+                "last_status": job.runtime.last_status,
+                "log_path": job.registration.log_path if job.registration else "",
             }
             for job in jobs
-        ],
-        "events": [
-            {
-                "event_id": event.event_id,
-                "name": event.name,
-                "status": event.status.value,
-                "count": event.count,
-            }
-            for event in events.values()
         ],
     }
 
@@ -57,13 +48,11 @@ def main() -> None:
 
     print(f"Jobs: {len(jobs)}")
     for job in jobs:
+        name = job.registration.name if job.registration else ""
         print(
-            f"- {job.job_id} {job.name} state={job.monitor_state} "
-            f"slurm={job.slurm_state} attempts={job.attempts}"
+            f"- {job.job_id} {name} status={job.runtime.last_status} "
+            f"attempts={job.runtime.attempts} submitted={job.runtime.submitted}"
         )
-    print(f"Events: {len(events)}")
-    for event in events.values():
-        print(f"- {event.event_id} {event.name} status={event.status.value} count={event.count}")
 
 
 if __name__ == "__main__":

@@ -1,22 +1,18 @@
 # Structure Complexity Review
 
 ## High-Level Structure (Summary)
-- Monitor controller coordinates state, conditions, and actions; it delegates to a watcher (log monitor), executor (job submission), and persistence.
-- Jobs are now explicit (`LocalJobRegistration`, `SlurmJobRegistration`) and define all event/action logic.
-- Monitor config is intentionally lean (poll interval), state is persisted for recovery.
-- Separate clients exist for local execution and SLURM submission; slurm_gen is used only for script generation.
+- `MonitorLoop` loads job files from a state directory and evaluates start/cancel/finish conditions.
+- Log events are configured per job and executed inline as Event+Action pairs.
+- State is stored as one JSON file per job (`{job_id}.job.json`) for easy cleanup.
+- Separate clients exist for local execution and SLURM submission; slurm_gen is only for script generation.
 
 ## Unnecessary Complexity / Potential Simplifications
 
-- **Event/action layering**: We still have `LogEventConfig` + `EventActionConfig` + `EventActionBinding` + `BaseMonitorAction`. This is flexible but deep. A single `EventActionSpec` (event + action in one record) could reduce indirection.
-- **Mixed config parsing paths**: Monitor config uses manual instantiation, while job configs use compoconf. This split makes the mental model harder. Consider a single config parse pipeline (even if minimal).
-- **Action queue + inline actions**: Two execution modes (queue vs inline) are powerful but add branching paths and persistence logic. If most use is inline, queue could be optional or moved to a plugin.
-- **Job duplication + restart adjustments**: Multiple adjustment paths (`extra_args`, `extra_args_append`, `log_path_current`, `slurm` overrides) create combinatorial behavior. A single `adjustments` object with explicit patch semantics could reduce surface area.
-- **Local vs Slurm differences**: We still allow fields (e.g., `slurm`) on shared base types, and rely on runtime checks. More explicit per‑backend action types would reduce ambiguity.
-- **State transitions**: `TransitionManager` and the synthetic event mapping add a layer of logic that is non-trivial to reason about. Consider making transitions explicit in job config or simplifying outcomes.
-- **Condition evaluation tracking**: `condition_data` + `started_ts` tracking per label is subtle and global. If only used for timeouts, a dedicated timeout condition type could be clearer.
-- **Path semantics**: `log_path` templates + `log_path_current` symlink + local `%t` expansions are powerful but complex. If most users only need one stable path, consider a simplified default path policy.
-- **Persistence layout**: Jobs/events are stored in separate folders plus `config.json` and action queue files. This is robust but complex to inspect manually. A single consolidated state file might be enough for non‑queue users.
+- **Event/action layering**: We still have `LogEventConfig` + `EventActionConfig` + `EventActionBinding` + `BaseMonitorAction`. This is flexible but deep; a single `EventActionSpec` could reduce indirection.
+- **Mixed config parsing paths**: Monitor config parsing is separate from job registration parsing; a single entry point would be simpler.
+- **Job duplication + restart adjustments**: Multiple adjustment knobs (`extra_args`, `extra_args_append`, `log_path_current`, `slurm`) are flexible but harder to reason about.
+- **Local vs Slurm differences**: Shared action types rely on runtime checks. More explicit backend subtypes would reduce ambiguity.
+- **Path semantics**: `log_path` templates + `log_path_current` symlink + local `%t` expansions are powerful but can be hard to reason about.
 
 ## Potentially Unavoidable Complexity
 
@@ -28,7 +24,7 @@
 1. **Unify event/action into a single spec** ✅
    - Replace `LogEventConfig` + `EventActionConfig` + `EventActionBinding` with a single `EventActionSpec` record (event + action in one).
    - Migrate job configs and parsing to use the unified spec.
-   - Update watcher/controller to consume `EventActionSpec` directly.
+   - Update MonitorLoop to consume `EventActionSpec` directly.
    - Tests: update integration/unit tests that assert event parsing or bindings.
    - Docs: update README/spec/examples to show the unified format.
 
@@ -69,13 +65,7 @@
    - Docs: document boolean semantics, timeout usage, and persistence flags.
 
 9. **Clarify backend‑specific actions** ✅
-   - Split action types more explicitly by backend (local vs slurm) to avoid runtime ambiguity.
-   - Ensure restart/duplicate actions validate against job type.
-   - Tests: add type‑specific action parsing and execution tests.
-   - Docs: document which actions are valid for each job type.
+   - Use a shared action type with `backend_config` and job_kind validation.
 
-10. **Transition/state simplification** ⚠️
-   - Re‑evaluate `TransitionManager` and synthetic event mapping; consider explicit transitions on job config if needed.
-   - If kept, document transition rules in a single place and reduce indirection.
-   - Tests: update transition-related tests for the new model.
-   - Docs: update state machine explanation.
+10. **Transition/state simplification** ✅
+   - Removed controller/transition layers in favor of a single MonitorLoop.

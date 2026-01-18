@@ -64,7 +64,6 @@ class SlurmConfig(ConfigInterface):
     command: list[str] = field(default_factory=list)
     srun: SrunConfig = field(default_factory=SrunConfig)
     sbatch: SbatchConfig = field(default_factory=SbatchConfig)
-    sbatch_overrides: dict[str, Any] = field(default_factory=dict)
     sbatch_extra_directives: list[str] = field(default_factory=list)
     test_only: bool = False
 

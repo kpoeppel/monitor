@@ -9,19 +9,9 @@ from typing import Any, Literal
 import yaml
 from compoconf import parse_config
 
-from monitor.conditions import MonitorConditionInterface
-from monitor.controller import MonitorController
 from monitor.local_client import LocalCommandClient
-from monitor.persistence import MonitorStateStore
-from monitor.submission import JobRegistration, parse_job_registration
-from monitor.watcher import (
-    BaseMonitor,
-    MonitorConfigInterface,
-    NullMonitor,
-    NullMonitorConfig,
-    SlurmLogMonitor,
-    SlurmLogMonitorConfig,
-)
+from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop, MonitorLoopConfig
+from monitor.submission import parse_job_registration
 
 
 @dataclass(kw_only=True)
@@ -77,35 +67,27 @@ def parse_app_config(payload: dict[str, Any]) -> MonitorAppConfig:
     )
 
 
-def build_controller(config: MonitorAppConfig) -> MonitorController:
+def build_loop(config: MonitorAppConfig) -> MonitorLoop:
+    _import_registry()
     monitor_cfg = config.monitor
+    poll_interval = 60.0
     if isinstance(monitor_cfg, dict):
-        class_name = monitor_cfg.get("class_name", "SlurmLogMonitor")
-        if class_name == "NullMonitor":
-            monitor_cfg = parse_config(NullMonitorConfig, monitor_cfg)
-        else:
-            monitor_cfg = parse_config(SlurmLogMonitorConfig, monitor_cfg)
-    if isinstance(monitor_cfg, NullMonitorConfig):
-        monitor = NullMonitor(monitor_cfg)
-    else:
-        monitor = SlurmLogMonitor(monitor_cfg)
+        monitor_cfg = parse_config(MonitorLoopConfig, monitor_cfg)
+    if isinstance(monitor_cfg, MonitorLoopConfig):
+        poll_interval = monitor_cfg.poll_interval_seconds
     client = _build_client(config.client)
-    state_store = (
-        MonitorStateStore(config.state_store_dir)
-        if config.state_store_dir
-        else None
-    )
-    controller = MonitorController(monitor, client, state_store=state_store)
-    _apply_jobs(controller, config.jobs)
-    if state_store and config.raw:
-        state_store.save_config(config.raw)
-    return controller
+    if not config.state_store_dir:
+        raise ValueError("state_store_dir is required for monitor loop")
+    store = JobFileStore(config.state_store_dir)
+    _sync_jobs(store, config.jobs)
+    return MonitorLoop(store, client, poll_interval_seconds=poll_interval)
 
 
-def sync_controller(controller: MonitorController, config: MonitorAppConfig) -> None:
-    _apply_jobs(controller, config.jobs)
-    if controller._state_store and config.raw:
-        controller._state_store.save_config(config.raw)
+def sync_loop(loop: MonitorLoop, config: MonitorAppConfig) -> None:
+    if not config.state_store_dir:
+        raise ValueError("state_store_dir is required for monitor loop")
+    store = JobFileStore(config.state_store_dir)
+    _sync_jobs(store, config.jobs)
 
 
 def _build_client(config: ClientConfig) -> LocalCommandClient:
@@ -123,69 +105,36 @@ def _build_client(config: ClientConfig) -> LocalCommandClient:
     raise ValueError(f"Unsupported client: {config.class_name}")
 
 
-def _parse_condition(payload: Any | None) -> Any | None:
-    if payload is None:
-        return None
-    if hasattr(payload, "instantiate"):
-        return payload
-    if isinstance(payload, dict):
-        return parse_config(MonitorConditionInterface.cfgtype, payload)
-    raise TypeError(f"Unsupported condition payload: {payload!r}")
-
-
-def _build_registration(payload: dict[str, Any]) -> JobRegistration:
-    from monitor.watcher import LogEventConfig, InactivityRuleConfig, StateEventConfig
-    from monitor.actions import ActionBackendInterface, BaseMonitorAction
-
+def _build_registration(payload: dict[str, Any]) -> Any:
     prepared = dict(payload)
     if "log_path_latest" in prepared and "log_path_current" not in prepared:
         prepared["log_path_current"] = prepared.pop("log_path_latest")
-    prepared["start_condition"] = _parse_condition(prepared.get("start_condition"))
-    prepared["cancel_condition"] = _parse_condition(prepared.get("cancel_condition"))
-    prepared["finish_condition"] = _parse_condition(prepared.get("finish_condition"))
-
-    def parse_action_payload(action_payload: Any) -> Any:
-        if isinstance(action_payload, dict):
-            payload = dict(action_payload)
-            backend_config = payload.get("backend_config")
-            if isinstance(backend_config, dict):
-                payload["backend_config"] = parse_config(ActionBackendInterface.cfgtype, backend_config)
-            return parse_config(BaseMonitorAction.cfgtype, payload)
-        return action_payload
-
-    def parse_event_config(cfg_type: Any, items: list[Any]) -> list[Any]:
-        parsed: list[Any] = []
-        for item in items:
-            if isinstance(item, dict):
-                payload = dict(item)
-                if "action" in payload:
-                    payload["action"] = parse_action_payload(payload["action"])
-                parsed.append(parse_config(cfg_type, payload))
-            else:
-                parsed.append(item)
-        return parsed
-
-    prepared["log_events"] = parse_event_config(LogEventConfig, prepared.get("log_events", []))
-    prepared["inactivity_rules"] = parse_event_config(InactivityRuleConfig, prepared.get("inactivity_rules", []))
-    prepared["state_events"] = parse_event_config(StateEventConfig, prepared.get("state_events", []))
+    for legacy_key in ("state_events", "inactivity_rules", "output_paths", "inactivity_threshold_seconds"):
+        prepared.pop(legacy_key, None)
     return parse_job_registration(prepared)
 
 
-def _apply_jobs(controller: MonitorController, jobs: list[JobConfig]) -> None:
+def _sync_jobs(store: JobFileStore, jobs: list[JobConfig]) -> None:
     for job in jobs:
         registration = _build_registration(job.registration)
-        existing = controller._submission_manager.get_job(job.job_id)
-        if existing is None:
-            controller.register_job(job.job_id, registration)
-        else:
-            existing.registration = registration
-            controller._submission_manager.update_job(existing)
+        existing = store.load(str(job.job_id))
+        runtime = existing.runtime if existing else None
+        record = JobRecordConfig(job_id=str(job.job_id), registration=registration)
+        if runtime is not None:
+            record.runtime = runtime
+        store.upsert(record)
+
+
+def _import_registry() -> None:
+    import monitor.actions  # noqa: F401
+    import monitor.conditions  # noqa: F401
+    import monitor.submission  # noqa: F401
 
 
 __all__ = [
     "MonitorAppConfig",
     "load_app_config",
     "parse_app_config",
-    "build_controller",
-    "sync_controller",
+    "build_loop",
+    "sync_loop",
 ]

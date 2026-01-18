@@ -17,11 +17,6 @@ def build_sbatch_directives(config: SlurmConfig) -> list[str]:
     for key, value in sbatch_values.items():
         if value is None:
             continue
-        flag = f"--{key.replace('_', '-')}"
-        directives.append(f"#SBATCH {flag}={value}")
-    for key, value in config.sbatch_overrides.items():
-        if value is None:
-            continue
         flag = key if key.startswith("--") else f"--{key.replace('_', '-')}"
         if value is True:
             directives.append(f"#SBATCH {flag}")
@@ -41,9 +36,7 @@ def build_replacements(
     extra_args: list[str] | None = None,
 ) -> dict[str, str]:
     full_command = [*command, *(extra_args or [])]
-    env_exports = "\n".join(
-        f"export {key}={value}" for key, value in (config.env or {}).items()
-    )
+    env_exports = "\n".join(f"export {key}={value}" for key, value in (config.env or {}).items())
     return {
         "job_name": job_name,
         "log_path": log_path,

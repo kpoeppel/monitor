@@ -1,0 +1,96 @@
+{
+  "class_name": "JobRecord",
+  "job_id": "train",
+  "registration": {
+    "class_name": "SlurmJobRegistration",
+    "name": "train",
+    "command": [
+      "python",
+      "train.py"
+    ],
+    "log_path": "./slurm_out/logs/train_%j.log",
+    "log_path_current": "./slurm_out/logs/train_latest.log",
+    "extra_args": [],
+    "log_to_file": true,
+    "metadata": {},
+    "slurm": {
+      "class_name": "Slurm",
+      "template_path": "./templates/job.sbatch",
+      "script_dir": "./slurm_out/scripts",
+      "log_dir": "./slurm_out/logs",
+      "array": true,
+      "launcher_cmd": "",
+      "srun_opts": "",
+      "launcher_env_passthrough": false,
+      "env": {},
+      "command": [
+        "python",
+        "train.py",
+        "--profile=fast"
+      ],
+      "srun": {
+        "_extras": {},
+        "_non_strict": true
+      },
+      "sbatch": {
+        "_extras": {
+          "gres": "gpu:1"
+        },
+        "_non_strict": true,
+        "account": null,
+        "nodes": null,
+        "partition": "gpu",
+        "qos": null,
+        "time": "0-04:00:00"
+      },
+      "sbatch_extra_directives": [],
+      "test_only": false
+    },
+    "log_events": [
+      {
+        "class_name": "LogEvent",
+        "action": {
+          "class_name": "RestartAction",
+          "reason": "oom",
+          "command": null,
+          "log_path": null,
+          "log_path_current": null,
+          "extra_args": null,
+          "extra_args_append": [
+            "--retry={attempts}"
+          ],
+          "metadata": null,
+          "log_to_file": null,
+          "backend_config": {
+            "class_name": "SlurmActionBackend",
+            "job_kind": "slurm",
+            "slurm": null
+          }
+        },
+        "conditions": [],
+        "action_id": null,
+        "name": "oom",
+        "pattern": "CUDA out of memory",
+        "pattern_type": "substring",
+        "metadata": {},
+        "extract_groups": {}
+      }
+    ],
+    "start_condition": null,
+    "cancel_condition": null,
+    "finish_condition": null,
+    "job_kind": null
+  },
+  "runtime": {
+    "class_name": "JobRuntime",
+    "submitted": false,
+    "attempts": 0,
+    "runtime_job_id": null,
+    "start_ts": null,
+    "log_cursor": 0,
+    "condition_state": {},
+    "action_state": {},
+    "last_status": null
+  },
+  "schema_version": 1
+}

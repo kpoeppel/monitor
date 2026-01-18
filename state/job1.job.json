@@ -1,0 +1,103 @@
+{
+  "class_name": "JobRecord",
+  "job_id": "job1",
+  "registration": {
+    "class_name": "LocalJobRegistration",
+    "name": "job1",
+    "command": [
+      "bash",
+      "./job1.sh"
+    ],
+    "log_path": "job1_%j.log",
+    "log_path_current": "job1_latest.log",
+    "extra_args": [],
+    "log_to_file": true,
+    "metadata": {},
+    "slurm": null,
+    "log_events": [
+      {
+        "class_name": "LogEvent",
+        "action": {
+          "class_name": "LogAction",
+          "message": "job {job_name} is ready",
+          "level": "info"
+        },
+        "conditions": [],
+        "action_id": null,
+        "name": "ready",
+        "pattern": "READY",
+        "pattern_type": "substring",
+        "metadata": {},
+        "extract_groups": {}
+      },
+      {
+        "class_name": "LogEvent",
+        "action": {
+          "class_name": "RestartAction",
+          "reason": "oom",
+          "command": null,
+          "log_path": null,
+          "log_path_current": null,
+          "extra_args": null,
+          "extra_args_append": [
+            "--retry={attempts}"
+          ],
+          "metadata": null,
+          "log_to_file": null,
+          "backend_config": {
+            "class_name": "LocalActionBackend",
+            "job_kind": "local"
+          }
+        },
+        "conditions": [],
+        "action_id": null,
+        "name": "oom",
+        "pattern": "CUDA out of memory",
+        "pattern_type": "substring",
+        "metadata": {},
+        "extract_groups": {}
+      },
+      {
+        "class_name": "LogEvent",
+        "action": {
+          "class_name": "DuplicateAction",
+          "name_suffix": "-copy",
+          "command": null,
+          "log_path": null,
+          "log_path_current": null,
+          "extra_args": null,
+          "extra_args_append": null,
+          "metadata": null,
+          "log_to_file": null,
+          "backend_config": {
+            "class_name": "LocalActionBackend",
+            "job_kind": "local"
+          }
+        },
+        "conditions": [],
+        "action_id": null,
+        "name": "duplicate",
+        "pattern": "DUPLICATE_JOB",
+        "pattern_type": "substring",
+        "metadata": {},
+        "extract_groups": {}
+      }
+    ],
+    "start_condition": null,
+    "cancel_condition": null,
+    "finish_condition": null,
+    "job_kind": null
+  },
+  "runtime": {
+    "class_name": "JobRuntime",
+    "submitted": false,
+    "attempts": 0,
+    "runtime_job_id": null,
+    "start_ts": null,
+    "log_cursor": 0,
+    "condition_state": {},
+    "action_state": {},
+    "last_status": null
+  },
+  "schema_version": 1
+}

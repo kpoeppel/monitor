@@ -350,7 +350,7 @@ class SlurmClient(BaseSlurmClient):
 
     @staticmethod
     def _parse_job_id(stdout: str) -> str | None:
-        match = re.search(r"Submitted batch job (\\d+)", stdout)
+        match = re.search(r"Submitted batch job (\d+)", stdout)
         if match:
             return match.group(1)
         return None

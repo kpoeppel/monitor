@@ -48,7 +48,7 @@ class SlurmGenClient(JobClientProtocol):
         log_path_current: str | None = None,
         slurm: dict[str, Any] | None = None,
     ) -> str:
-        slurm_config = self._parse_slurm_config(merge_slurm_config(self.config.slurm, slurm))
+        slurm_config = self._parse_slurm_config(self._merge_slurm(self.config.slurm, slurm))
         command_to_run = list(slurm_config.command or command)
         script_path = generate_script(
             slurm_config,
@@ -79,7 +79,7 @@ class SlurmGenClient(JobClientProtocol):
         if not log_paths:
             return []
 
-        slurm_config = self._parse_slurm_config(merge_slurm_config(self.config.slurm, slurm))
+        slurm_config = self._parse_slurm_config(self._merge_slurm(self.config.slurm, slurm))
         command_to_run = list(slurm_config.command or command)
         script_path = generate_script(
             slurm_config,
@@ -116,6 +116,11 @@ class SlurmGenClient(JobClientProtocol):
         merged.setdefault("log_dir", self.config.output_dir or "")
         return parse_config(SlurmConfig, merged)
 
+    def _merge_slurm(self, base: dict[str, Any] | SlurmConfig | None, override: dict[str, Any] | SlurmConfig | None) -> dict[str, Any]:
+        base_dict = _slurm_to_dict(base)
+        override_dict = _slurm_to_dict(override)
+        return merge_slurm_config(base_dict, override_dict)
+
     def _build_client(self) -> BaseSlurmClient:
         client_payload = self.config.slurm_client
         if not client_payload:
@@ -132,3 +137,13 @@ class SlurmGenClient(JobClientProtocol):
 
 
 __all__ = ["SlurmGenClient", "SlurmGenClientConfig"]
+
+
+def _slurm_to_dict(value: dict[str, Any] | SlurmConfig | None) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, SlurmConfig):
+        from dataclasses import asdict
+
+        return asdict(value)
+    return dict(value)

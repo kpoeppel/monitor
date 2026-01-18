@@ -1,0 +1,62 @@
+{
+  "class_name": "JobRecord",
+  "job_id": "job2",
+  "registration": {
+    "class_name": "LocalJobRegistration",
+    "name": "job2",
+    "command": [
+      "bash",
+      "./job2.sh"
+    ],
+    "log_path": "job2_%j.log",
+    "log_path_current": "job2_latest.log",
+    "extra_args": [],
+    "log_to_file": true,
+    "metadata": {},
+    "slurm": null,
+    "log_events": [],
+    "start_condition": {
+      "class_name": "CompositeCondition",
+      "persistent_pass": false,
+      "persistent_fail": false,
+      "mode": "all",
+      "conditions": [
+        {
+          "class_name": "FileExistsCondition",
+          "persistent_pass": true,
+          "persistent_fail": false,
+          "path": "./ready.txt"
+        },
+        {
+          "class_name": "TimeoutCondition",
+          "persistent_pass": false,
+          "persistent_fail": false,
+          "timeout_seconds": 600.0,
+          "message": "timeout waiting for condition"
+        }
+      ]
+    },
+    "cancel_condition": null,
+    "finish_condition": {
+      "class_name": "FileContentCondition",
+      "persistent_pass": false,
+      "persistent_fail": false,
+      "path": "./done.txt",
+      "pattern": "DONE",
+      "mode": "contains"
+    },
+    "job_kind": null
+  },
+  "runtime": {
+    "class_name": "JobRuntime",
+    "submitted": false,
+    "attempts": 0,
+    "runtime_job_id": null,
+    "start_ts": null,
+    "log_cursor": 0,
+    "condition_state": {},
+    "action_state": {},
+    "last_status": null
+  },
+  "schema_version": 1
+}

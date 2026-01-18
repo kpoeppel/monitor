@@ -1,5 +1,5 @@
 monitor:
-  class_name: SlurmLogMonitor
+  class_name: MonitorLoop
   poll_interval_seconds: 30
 
 state_store_dir: "./state"
@@ -20,19 +20,23 @@ jobs:
       name: train
       command: ["python", "train.py"]
       log_path: "./slurm_out/logs/train_%j.log"
+      # log_path_current points to the latest resolved log file (symlink updated on submit)
       log_path_current: "./slurm_out/logs/train_latest.log"
       slurm:
+        # SlurmConfig requires template_path/script_dir/log_dir
+        template_path: "./templates/job.sbatch"
+        script_dir: "./slurm_out/scripts"
+        log_dir: "./slurm_out/logs"
+        command: ["python", "train.py", "--profile=fast"]
         sbatch:
           partition: gpu
           time: "0-04:00:00"
+          gres: "gpu:1"
       log_events:
         - class_name: LogEvent
           name: oom
           pattern: "CUDA out of memory"
           pattern_type: substring
-          state:
-            class_name: CrashState
-          mode: inline
           action:
             class_name: RestartAction
             reason: "oom"
