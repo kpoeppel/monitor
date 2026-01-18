@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
-from compoconf import ConfigInterface, RegistrableConfigInterface, register, register_interface
+from compoconf import ConfigInterface, RegistrableConfigInterface, register, register_interface, parse_config
 
 LOGGER = logging.getLogger(__name__)
 
@@ -104,3 +105,39 @@ class PendingStateConfig(ConfigInterface):
 @register
 class PendingState(BaseMonitorState):
     config: PendingStateConfig
+
+
+def get_state(name: str) -> BaseMonitorState | None:
+    """
+    Get a state instance by its key or class name.
+    
+    Examples:
+        get_state("success") -> SuccessState
+        get_state("running") -> StartedState
+        get_state("StalledState") -> StalledState
+    """
+    if not name:
+        return None
+
+    # Mapping of common keys to class names
+    mapping = {
+        "success": "SuccessState",
+        "crash": "CrashState",
+        "stall": "StalledState",
+        "stalled": "StalledState",
+        "timeout": "TimeoutState",
+        "running": "StartedState",
+        "started": "StartedState",
+        "pending": "PendingState",
+        "undefined": "UndefinedState",
+    }
+    
+    key = name.lower()
+    class_name = mapping.get(key) or name
+    if not class_name.endswith("State"):
+        class_name = class_name[0].upper() + class_name[1:] + "State"
+
+    try:
+        return parse_config(MonitorStateInterface.cfgtype, {"class_name": class_name}).instantiate(MonitorStateInterface)
+    except (KeyError, AttributeError, ValueError): # pragma: no cover
+        return None

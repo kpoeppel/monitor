@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from monitor.job_client_protocol import JobClientProtocol
+from monitor.utils.paths import resolve_log_path, update_log_symlink
 
 
 @dataclass
@@ -24,7 +25,7 @@ class LocalJob:
 
     job_id: str
     name: str
-    script_path: str
+    command: list[str]
     log_path: str
     process: subprocess.Popen | None = None
     state: str = "PENDING"
@@ -55,51 +56,66 @@ class LocalCommandClient(JobClientProtocol):
         self._jobs: dict[str, LocalJob] = {}
         self._job_counter = 0
 
-    def submit(self, name: str, script_path: str, log_path: str) -> str:
+    def submit(
+        self,
+        name: str,
+        command: list[str],
+        log_path: str,
+        extra_args: list[str] | None = None,
+        log_to_file: bool | None = None,
+        log_path_current: str | None = None,
+        slurm: dict[str, Any] | None = None,
+    ) -> str:
         """Submit a local script as a background process.
 
         Args:
             name: Human-readable job name
-            script_path: Path to bash script to execute
+            command: Command to execute
             log_path: Path where stdout/stderr will be written
 
         Returns:
             job_id: String identifier for this job
 
         Raises:
-            FileNotFoundError: If script_path doesn't exist
+            FileNotFoundError: If command[0] doesn't exist
             OSError: If process creation fails
         """
         job_id = str(self._job_counter)
         self._job_counter += 1
 
-        # Ensure log directory exists
-        log_path_obj = Path(log_path)
-        log_path_obj.parent.mkdir(parents=True, exist_ok=True)
-
-        # Start process with output redirected to log file
-        log_file = open(log_path, "w")
+        log_file = None
+        stdout_target = subprocess.DEVNULL
+        if log_to_file is None or log_to_file:
+            timestamp = int(time.time())
+            resolved_log_path = resolve_log_path(log_path, job_id=job_id, timestamp=timestamp)
+            log_path_obj = Path(resolved_log_path)
+            log_path_obj.parent.mkdir(parents=True, exist_ok=True)
+            log_file = open(log_path_obj, "w")
+            stdout_target = log_file
+            if log_path_current:
+                update_log_symlink(log_path_obj, Path(log_path_current))
         try:
             proc = subprocess.Popen(
-                ["bash", script_path],
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
+                [*command, *(extra_args or [])],
+                stdout=stdout_target,
+                stderr=subprocess.STDOUT if log_file else subprocess.DEVNULL,
                 start_new_session=True,  # Detach from terminal
-                cwd=Path(script_path).parent,  # Run in script's directory
+                cwd=self._command_cwd(command),  # Run in command's directory if possible
             )
 
             job = LocalJob(
                 job_id=job_id,
                 name=name,
-                script_path=script_path,
-                log_path=log_path,
+                command=list(command),
+                log_path=str(log_path_obj) if log_to_file is None or log_to_file else log_path,
                 process=proc,
                 state="RUNNING",
             )
             self._jobs[job_id] = job
 
         except Exception:
-            log_file.close()
+            if log_file:
+                log_file.close()
             raise
 
         # Note: log_file will remain open for the lifetime of the process
@@ -110,9 +126,14 @@ class LocalCommandClient(JobClientProtocol):
     def submit_array(
         self,
         array_name: str,
-        script_path: str,
+        command: list[str],
         log_paths: list[str],
         task_names: list[str],
+        extra_args: list[str] | None = None,
+        start_index: int | None = None,
+        log_to_file: bool | None = None,
+        log_path_current: str | None = None,
+        slurm: dict[str, Any] | None = None,
     ) -> list[str]:
         """Submit multiple instances of a script.
 
@@ -121,7 +142,7 @@ class LocalCommandClient(JobClientProtocol):
 
         Args:
             array_name: Base name for the job array
-            script_path: Path to script to execute for each task
+            command: Command to execute for each task
             log_paths: Log paths, one per task
             task_names: Task names, one per task
 
@@ -134,10 +155,6 @@ class LocalCommandClient(JobClientProtocol):
             job_id = str(self._job_counter)
             self._job_counter += 1
 
-            # Ensure log directory exists
-            log_path_obj = Path(log_path)
-            log_path_obj.parent.mkdir(parents=True, exist_ok=True)
-
             # Set environment variables for the task
             env = {
                 **subprocess.os.environ,
@@ -145,22 +162,32 @@ class LocalCommandClient(JobClientProtocol):
                 "TASK_NAME": task_name,
             }
 
-            log_file = open(log_path, "w")
+            log_file = None
+            stdout_target = subprocess.DEVNULL
+            if log_to_file is None or log_to_file:
+                timestamp = int(time.time())
+                resolved_log_path = resolve_log_path(log_path, job_id=job_id, timestamp=timestamp)
+                log_path_obj = Path(resolved_log_path)
+                log_path_obj.parent.mkdir(parents=True, exist_ok=True)
+                log_file = open(log_path_obj, "w")
+                stdout_target = log_file
+                if log_path_current:
+                    update_log_symlink(log_path_obj, Path(log_path_current))
             try:
                 proc = subprocess.Popen(
-                    ["bash", script_path],
-                    stdout=log_file,
-                    stderr=subprocess.STDOUT,
+                    [*command, *(extra_args or [])],
+                    stdout=stdout_target,
+                    stderr=subprocess.STDOUT if log_file else subprocess.DEVNULL,
                     start_new_session=True,
                     env=env,
-                    cwd=Path(script_path).parent,
+                    cwd=self._command_cwd(command),
                 )
 
                 job = LocalJob(
                     job_id=job_id,
                     name=f"{array_name}_{task_name}",
-                    script_path=script_path,
-                    log_path=log_path,
+                    command=list(command),
+                    log_path=str(log_path_obj) if log_to_file is None or log_to_file else log_path,
                     process=proc,
                     state="RUNNING",
                 )
@@ -168,7 +195,8 @@ class LocalCommandClient(JobClientProtocol):
                 job_ids.append(job_id)
 
             except Exception:
-                log_file.close()
+                if log_file:
+                    log_file.close()
                 raise
 
         return job_ids
@@ -235,30 +263,14 @@ class LocalCommandClient(JobClientProtocol):
 
         return statuses
 
-    def job_ids_by_name(self, name: str) -> list[str]:
-        """Get job IDs with matching name.
-
-        Args:
-            name: Job name to search for
-
-        Returns:
-            List of matching job_ids
-        """
-        return [job_id for job_id, job in self._jobs.items() if job.name == name]
-
-    def get_job(self, job_id: str) -> LocalJob:
-        """Get job details.
-
-        Args:
-            job_id: Job identifier
-
-        Returns:
-            LocalJob object with details
-
-        Raises:
-            KeyError: If job_id not found
-        """
-        return self._jobs[job_id]
+    @staticmethod
+    def _command_cwd(command: list[str]) -> str | None:
+        if not command:
+            return None
+        candidate = command[0]
+        if candidate in {"bash", "sh"} and len(command) > 1:
+            candidate = command[1]
+        return str(Path(candidate).parent)
 
     def cleanup(self) -> None:
         """Clean up all tracked jobs.

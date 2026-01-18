@@ -12,12 +12,13 @@ from typing import Any, Literal, Pattern, TYPE_CHECKING
 from compoconf import (
     ConfigInterface,
     RegistrableConfigInterface,
+    parse_config,
     register,
     register_interface,
 )
 
-from monitor.event_bindings import EventActionBinding, instantiate_bindings
-from monitor.utils.states import get_state_by_name
+from monitor.event_bindings import EventActionBinding, EventActionConfig, instantiate_action_binding
+from monitor.states import get_state, MonitorStateInterface
 
 if TYPE_CHECKING:
     from monitor.states import BaseMonitorState, MonitorStateInterface
@@ -37,6 +38,10 @@ class MonitoredJob:
     state: str
     metadata: dict[str, Any] = field(default_factory=dict)
     output_paths: list[str] = field(default_factory=list)
+    log_events: list[Any] = field(default_factory=list)
+    inactivity_rules: list[Any] = field(default_factory=list)
+    state_events: list[Any] = field(default_factory=list)
+    inactivity_threshold_seconds: float | None = None
 
 
 @dataclass(kw_only=True)
@@ -80,43 +85,27 @@ class BaseMonitor:
 
 @dataclass
 class NullMonitorConfig(MonitorConfigInterface):
-    """Configuration for NullMonitor (no-op monitor for testing)."""
-
     class_name: str = "NullMonitor"
-    log_path: str = ""
 
 
 @register
 class NullMonitor(BaseMonitor):
-    """No-op monitor implementation for testing."""
-
-    config: NullMonitorConfig
-
+    """Monitor that does nothing (for testing)."""
     def watch_sync(self, jobs: list[MonitoredJob]) -> dict[str, MonitorOutcome]:
-        return {}
+        return {job.job_id: MonitorOutcome(job_id=job.job_id, status="pending") for job in jobs}
 
 
 @dataclass
-class LogEventConfig(ConfigInterface):
+class LogEventConfig(EventActionConfig):
     """Configuration for a specific event triggered by log patterns."""
 
     class_name: str = "LogEvent"
     name: str = ""
     pattern: str = ""
-    pattern_type: Literal["substring", "regex", "inactivity"] = "substring"
+    pattern_type: Literal["substring", "regex"] = "substring"
     state: MonitorStateInterface.cfgtype | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     extract_groups: dict[str, int | str] = field(default_factory=dict)
-    actions: list[EventActionBinding.cfgtype] = field(default_factory=list)
-
-    def __post_init__(self) -> None:
-        if self.state is None and not self.metadata:
-            raise ValueError(f"LogEventConfig '{self.name}' must specify a state change or metadata")
-        if self.pattern_type not in ("substring", "regex", "inactivity"):
-            raise ValueError(f"Unsupported pattern_type: {self.pattern_type}")
-        # StateEventConfig and inactivity patterns don't require a pattern
-        if self.class_name == "LogEvent" and self.pattern_type in ("substring", "regex") and not self.pattern:
-            raise ValueError(f"LogEventConfig '{self.name}' with pattern_type='{self.pattern_type}' requires a pattern")
 
 
 @dataclass
@@ -126,7 +115,7 @@ class StateEventConfig(LogEventConfig):
 
 
 @dataclass
-class InactivityRuleConfig(ConfigInterface):
+class InactivityRuleConfig(EventActionConfig):
     """Configuration for inactivity (stall) detection."""
 
     class_name: str = "InactivityRule"
@@ -134,7 +123,6 @@ class InactivityRuleConfig(ConfigInterface):
     threshold_seconds: float | None = None
     state: MonitorStateInterface.cfgtype | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-    actions: list[EventActionBinding.cfgtype] = field(default_factory=list)
 
 
 @dataclass
@@ -142,13 +130,7 @@ class SlurmLogMonitorConfig(MonitorConfigInterface):
     """Configuration for SlurmLogMonitor."""
 
     class_name: str = "SlurmLogMonitor"
-    log_path: str = ""
     poll_interval_seconds: float = 60.0
-    inactivity_threshold_seconds: float = 3600.0
-    log_events: list[LogEventConfig] = field(default_factory=list)
-    inactivity_rules: list[InactivityRuleConfig] = field(default_factory=list)
-    state_events: list[LogEventConfig] = field(default_factory=list)
-    state_whitelist: list[str] = field(default_factory=list)
 
 
 @register
@@ -160,11 +142,6 @@ class SlurmLogMonitor(BaseMonitor):
     def __init__(self, config: SlurmLogMonitorConfig) -> None:
         super().__init__(config)
         self._snapshots: dict[str, _JobSnapshot] = {}
-        self._compiled_events = [_CompiledLogEvent(rule, _compile_pattern(rule)) for rule in config.log_events]
-        self._compiled_rules = self._compiled_events  # Alias for backwards compatibility
-        self._inactivity_rules = config.inactivity_rules
-        self._state_event_configs = {cfg.name: cfg for cfg in config.state_events}
-        self._state_whitelist = set(config.state_whitelist)  # Convert to set for backwards compatibility
 
     def watch_sync(self, jobs: list[MonitoredJob]) -> dict[str, MonitorOutcome]:
         now = time.time()
@@ -174,23 +151,29 @@ class SlurmLogMonitor(BaseMonitor):
         return outcomes
 
     def _evaluate_job(self, job: MonitoredJob, now: float) -> MonitorOutcome:
-        # Check state whitelist - if job state is not in whitelist, return early
-        if self._state_whitelist and job.state not in self._state_whitelist:
-            return MonitorOutcome(
-                job_id=job.job_id,
-                status="complete",
-                last_update_seconds=None,
-                metadata={},
-                events=[],
-            )
-
         log_path = Path(job.log_path)
         snapshot = self._snapshots.get(job.job_id)
         events: list[MonitorEvent] = []
         metadata: dict[str, Any] = {}
 
+        log_events = self._coerce_log_events(job.log_events)
+        compiled_events = [
+            _CompiledLogEvent(
+                rule=rule,
+                pattern=_compile_pattern(rule),
+                binding=_maybe_instantiate_binding(rule, index=idx, kind="log"),
+            )
+            for idx, rule in enumerate(log_events)
+        ]
+        inactivity_rules = self._coerce_inactivity_rules(
+            job.inactivity_rules
+        )
+        state_event_configs = {
+            cfg.name: cfg
+            for cfg in self._coerce_state_events(job.state_events)
+        }
+
         log_current = ""
-        updated = False
         last_update_seconds: float | None = None
 
         if log_path.exists():
@@ -198,49 +181,53 @@ class SlurmLogMonitor(BaseMonitor):
                 log_current = log_path.read_text(encoding="utf-8", errors="replace")
                 mtime = log_path.stat().st_mtime
                 last_update_seconds = now - mtime
-                updated = True
+                
+                previous_log = snapshot.log_content if snapshot else ""
+                new_events = self._extract_events(
+                    job.job_id,
+                    log_current,
+                    previous_log,
+                    compiled_events,
+                )
+                events.extend(new_events)
+
+                if snapshot:
+                    snapshot.log_content = log_current
+                    snapshot.last_update = mtime
+                else:
+                    snapshot = _JobSnapshot(log_content=log_current, last_update=mtime)
             except OSError:  # pragma: no cover
                 pass
 
-        if updated:
-            previous_log = snapshot.log_content if snapshot else ""
-            new_events = self._extract_events(job, log_current, previous_log)
-            events.extend(new_events)
-
-            if snapshot:
-                snapshot.log_content = log_current
-                snapshot.last_update = mtime
-            else:
-                snapshot = _JobSnapshot(log_content=log_current, last_update=mtime)
-
         status: Literal["active", "stall", "complete", "pending"] = "pending"
+        threshold = self._effective_threshold(job)
         if last_update_seconds is not None:
-            threshold = self._effective_threshold(job)
             if threshold is not None and last_update_seconds >= threshold:
                 status = "stall"
             else:
-                status = "active" # pragma: no cover
+                status = "active"
         else:
             status = "pending"
-            last_update_seconds = None
+
+        if snapshot is None:
+             snapshot = _JobSnapshot(log_content=log_current, last_update=now)
 
         inactivity_events: list[MonitorEvent] = []
-        if status == "stall":
-            if snapshot is None:
-                snapshot = _JobSnapshot(log_content=log_current, last_update=now) # pragma: no cover
+        if last_update_seconds is not None:
             inactivity_events = self._build_inactivity_events(
                 job,
                 snapshot,
                 last_update_seconds,
-                threshold if updated else self._effective_threshold(job),
+                threshold,
+                inactivity_rules,
+                state_event_configs,
             )
-        else:
-            if snapshot:
-                snapshot.triggered_inactivity_events.clear()
 
-        if snapshot:
-            snapshot.last_status = status
-            self._snapshots[job.job_id] = snapshot
+        if status != "stall":
+            snapshot.triggered_inactivity_events.clear()
+
+        snapshot.last_status = status
+        self._snapshots[job.job_id] = snapshot
 
         events.extend(inactivity_events)
 
@@ -253,39 +240,38 @@ class SlurmLogMonitor(BaseMonitor):
         )
 
     def _effective_threshold(self, job: MonitoredJob) -> float | None:
-        threshold = job.metadata.get("inactivity_threshold_seconds")
-        if threshold is not None:
-            return float(threshold)
-        return self.config.inactivity_threshold_seconds
+        if job.inactivity_threshold_seconds is not None:
+            return float(job.inactivity_threshold_seconds)
+        return None
 
     def _extract_events(
         self,
-        job: MonitoredJob,
+        job_id: str,
         content: str,
         previous: str,
+        compiled_events: list[_CompiledLogEvent],
         source: str = "log",
     ) -> list[MonitorEvent]:
         events: list[MonitorEvent] = []
         new_text = content
         if previous and content.startswith(previous):
-            new_text = content[len(previous):]
+            new_text = content[len(previous) :]
 
         if not new_text:
             return events
 
-        for compiled in self._compiled_events:
+        for compiled in compiled_events:
             for match in compiled.pattern.finditer(new_text):
                 metadata = _extract_metadata(match, compiled.rule)
                 metadata["match"] = match.group(0)
                 metadata["line"] = match.string[match.start() : match.end()]
-                metadata["source"] = source
-
+                
                 event = MonitorEvent(
-                    job_id=job.job_id,
+                    job_id=job_id,
                     name=compiled.rule.name,
                     state=compiled.instantiate_state(),
                     metadata={**compiled.rule.metadata, **metadata},
-                    actions=instantiate_bindings(compiled.rule.actions),
+                    actions=[compiled.binding] if compiled.binding else [],
                 )
                 events.append(event)
         return events
@@ -294,21 +280,36 @@ class SlurmLogMonitor(BaseMonitor):
         self,
         job: MonitoredJob,
         snapshot: _JobSnapshot,
-        stall_duration: float | None,
+        stall_duration: float,
         threshold: float | None,
+        inactivity_rules: list[InactivityRuleConfig],
+        state_event_configs: dict[str, StateEventConfig],
     ) -> list[MonitorEvent]:
-        if not self._inactivity_rules:
+        if not inactivity_rules:
             return []
-        if stall_duration is None:
-            return [] # pragma: no cover
         events: list[MonitorEvent] = []
-        for rule in self._inactivity_rules:
+        for rule in inactivity_rules:
             if rule.name in snapshot.triggered_inactivity_events:
-                continue # pragma: no cover
+                continue
             
-            rule_threshold = rule.threshold_seconds or threshold
+            rule_threshold = rule.threshold_seconds if rule.threshold_seconds is not None else threshold
             if rule_threshold is not None and stall_duration >= rule_threshold:
-                event = self._build_state_event(job, rule.name, {"stall_duration": stall_duration})
+                fallback = state_event_configs.get(rule.name)
+                state_cfg = rule if rule.state is not None else (fallback or rule)
+                action_cfg = rule if rule.action is not None else (fallback or rule)
+                metadata = dict(fallback.metadata) if fallback else {}
+                metadata.update(rule.metadata)
+                event = self._build_event_from_config(
+                    job_id=job.job_id,
+                    name=rule.name,
+                    extra_metadata={"stall_duration": stall_duration},
+                    job=job,
+                    cfg=rule,
+                    fallback_state=state_cfg,
+                    fallback_action=action_cfg,
+                    metadata_override=metadata,
+                    kind="inactivity",
+                )
                 if event:
                     events.append(event)
                     snapshot.triggered_inactivity_events.add(rule.name)
@@ -316,26 +317,94 @@ class SlurmLogMonitor(BaseMonitor):
 
     def _build_state_event(
         self,
-        job: MonitoredJob,
-        state_name: str,
+        job_id: str | MonitoredJob,
+        name: str,
         extra_metadata: dict[str, Any],
+        job: MonitoredJob | None = None,
+        state_event_configs: dict[str, StateEventConfig] | None = None,
     ) -> MonitorEvent | None:
-        cfg = self._state_event_configs.get(state_name)
-        from monitor.states import MonitorStateInterface
-        state = cfg.state.instantiate(MonitorStateInterface) if cfg and cfg.state else get_state_by_name(state_name)
-        metadata = dict(cfg.metadata if cfg else {})
-        metadata.setdefault("job_name", job.name)
-        metadata.update(extra_metadata)
-        actions = instantiate_bindings(cfg.actions) if cfg else []
-        if state is None and not actions:
+        if isinstance(job_id, MonitoredJob):
+             job = job_id
+             job_id = job.job_id
+
+        cfg = (state_event_configs or {}).get(name)
+        if cfg is None:
             return None
+        return self._build_event_from_config(
+            job_id=str(job_id),
+            name=name,
+            extra_metadata=extra_metadata,
+            job=job,
+            cfg=cfg,
+            fallback_state=cfg,
+            fallback_action=cfg,
+            metadata_override=dict(cfg.metadata),
+            kind="state",
+        )
+
+    def _build_event_from_config(
+        self,
+        *,
+        job_id: str,
+        name: str,
+        extra_metadata: dict[str, Any],
+        job: MonitoredJob | None,
+        cfg: EventActionConfig,
+        fallback_state: EventActionConfig,
+        fallback_action: EventActionConfig,
+        metadata_override: dict[str, Any],
+        kind: str,
+    ) -> MonitorEvent | None:
+        from monitor.states import MonitorStateInterface
+        state_source = fallback_state
+        action_source = fallback_action
+        state = (
+            state_source.state.instantiate(MonitorStateInterface)
+            if getattr(state_source, "state", None)
+            else get_state(name)
+        )
+        metadata = dict(metadata_override)
+        if job:
+            metadata.setdefault("job_name", job.name)
+        metadata.update(extra_metadata)
+        binding = _maybe_instantiate_binding(action_source, index=0, kind=kind)
         return MonitorEvent(
-            job_id=job.job_id,
-            name=state_name,
+            job_id=str(job_id),
+            name=name,
             state=state,
             metadata=metadata,
-            actions=actions,
+            actions=[binding] if binding else [],
         )
+
+    @staticmethod
+    def _coerce_log_events(events: list[Any]) -> list[LogEventConfig]:
+        coerced: list[LogEventConfig] = []
+        for item in events:
+            if isinstance(item, LogEventConfig):
+                coerced.append(item)
+            elif isinstance(item, dict):
+                coerced.append(parse_config(LogEventConfig, item))
+        return coerced
+
+    @staticmethod
+    def _coerce_state_events(events: list[Any]) -> list[StateEventConfig]:
+        coerced: list[StateEventConfig] = []
+        for item in events:
+            if isinstance(item, StateEventConfig):
+                coerced.append(item)
+            elif isinstance(item, dict):
+                coerced.append(parse_config(StateEventConfig, item))
+        return coerced
+
+    @staticmethod
+    def _coerce_inactivity_rules(events: list[Any]) -> list[InactivityRuleConfig]:
+        coerced: list[InactivityRuleConfig] = []
+        for item in events:
+            if isinstance(item, InactivityRuleConfig):
+                coerced.append(item)
+            elif isinstance(item, dict):
+                coerced.append(parse_config(InactivityRuleConfig, item))
+        return coerced
 
 
 @dataclass(kw_only=True)
@@ -351,11 +420,12 @@ class _JobSnapshot:
 class _CompiledLogEvent:
     rule: LogEventConfig
     pattern: Pattern[str]
+    binding: EventActionBinding | None
 
     def instantiate_state(self) -> BaseMonitorState | None:
         from monitor.states import MonitorStateInterface
         if self.rule.state is None:
-            return None # pragma: no cover
+            return None
         return self.rule.state.instantiate(MonitorStateInterface)
 
 
@@ -372,32 +442,36 @@ def _extract_metadata(match: re.Match[str], rule: LogEventConfig) -> dict[str, A
         return extracted
     for key, group in rule.extract_groups.items():
         if isinstance(group, str) and group == "match":
-            extracted[key] = match.group(0) # pragma: no cover
+            extracted[key] = match.group(0)
             continue
         try:
             extracted[key] = match.group(group)
-        except (IndexError, KeyError): # pragma: no cover
+        except (IndexError, KeyError):
             continue
     return extracted
 
 
-def _fallback_state_for(name: str) -> BaseMonitorState | None:
-    from monitor.states import SuccessState, SuccessStateConfig, StalledState, StalledStateConfig, TimeoutState, TimeoutStateConfig, CrashState, CrashStateConfig
-    key = name.lower()
-    if key == "stall":
-        return StalledState(StalledStateConfig())
-    if key == "timeout":
-        return TimeoutState(TimeoutStateConfig())
-    if key == "crash":
-        return CrashState(CrashStateConfig())
-    if key == "success":
-        return SuccessState(SuccessStateConfig())
-    return None # pragma: no cover
+def _maybe_instantiate_binding(
+    rule: EventActionConfig | None,
+    *,
+    index: int,
+    kind: str,
+) -> EventActionBinding | None:
+    if rule is None or rule.action is None:
+        return None
+    return instantiate_action_binding(
+        rule,
+        event_name=getattr(rule, "name", kind),
+        kind=kind,
+        index=index,
+    )
 
 
 __all__ = [
     "SlurmLogMonitor",
     "SlurmLogMonitorConfig",
+    "NullMonitor",
+    "NullMonitorConfig",
     "MonitoredJob",
     "MonitorOutcome",
     "MonitorEvent",

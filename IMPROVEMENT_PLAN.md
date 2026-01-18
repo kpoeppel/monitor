@@ -6,9 +6,7 @@ This document outlines identified inconsistencies in the `monitor` project follo
 
 ### 1.1 State Instantiation Logic
 There are currently three different ways monitor states (e.g., `SuccessState`, `StalledState`) are instantiated:
-*   **`monitor.utils.states.get_state_by_name`**: Uses string manipulation and `compoconf.parse_config`.
 *   **`monitor.watcher._fallback_state_for`**: Uses a hardcoded mapping and direct instantiation.
-*   **`monitor.controller._fallback_state_for`**: (Recently removed/merged) but similar logic exists in the state event configuration handling.
 *   **Direct Config instantiation**: Via `cfg.state.instantiate(MonitorStateInterface)`.
 
 **Issue**: Logic for mapping string modes (stall, success, crash) to state objects is fragmented, leading to maintenance overhead.
@@ -57,3 +55,54 @@ There are currently three different ways monitor states (e.g., `SuccessState`, `
 2.  **Phase 2: Refactor Persistence**: Implement atomic writes and move path expansion to the utility.
 3.  **Phase 3: Controller Decomposition**: Extract `TransitionManager` and `ConditionEvaluator`.
 4.  **Phase 4: Cleanup**: Update `SPEC.md` to match the current implementation (Action Queue, etc.) and consolidate tests.
+
+## 4. Repo Component Map (Current)
+
+### 4.1 Core Workflow
+*   **Controller**: `monitor.controller.MonitorController` coordinates watcher + client, handles events/actions, persistence.
+*   **Watcher**: `monitor.watcher.SlurmLogMonitor` (and `NullMonitor`) produce `MonitorOutcome` + `MonitorEvent`s.
+*   **Executor**: `monitor.executor.Executor` implements submit/restart/stop/finalize job operations.
+*   **Submission**: `monitor.submission.SubmissionManager` stores `JobRuntimeState`, uses `MonitorStateStore` for recovery.
+*   **Job Client**: `monitor.job_client_protocol.JobClientProtocol` defines submit/squeue/cancel/remove contract.
+
+### 4.2 Domain Models
+*   **States**: `monitor.states` defines `BaseMonitorState` variants and `get_state`.
+*   **Events**: `monitor.events` defines `EventRecord`, `EventStatus`, `ActionResult`.
+*   **Actions**: `monitor.actions` defines `BaseMonitorAction` plus concrete actions.
+*   **Conditions**: `monitor.conditions` defines `MonitorConditionInterface` and gate logic.
+
+### 4.3 Infrastructure
+*   **Persistence**: `monitor.persistence.state_store.MonitorStateStore` stores jobs + events with atomic writes.
+*   **Action Queue**: `monitor.action_queue.ActionQueue` provides file-backed async action staging.
+*   **Utilities**: `monitor.utils.*` for run helpers and path handling.
+
+## 5. Continuation: Concrete Improvement Backlog
+
+### 5.1 State/Event Hygiene
+*   **Event status separation**: Clarify the boundary between `EventStatus` and `ActionResult.status` in `BaseMonitorAction.update_event`.
+*   **Event identity**: Centralize event ID construction and index maintenance so `MonitorController` and `ActionQueue` share the same rules.
+*   **State mapping**: Move `get_state` mapping into a small registry map and expose a single `resolve_state(key: str)` helper for controller + watcher.
+
+### 5.2 Controller Decomposition (Targeted Cuts)
+*   **TransitionManager**: Lift `_classify_mode`, `_capture_slurm_transitions`, and state-event fallback into `monitor.transition`.
+*   **ActionDispatcher**: Lift event-to-action decision logic and queue/inline branching into `monitor.dispatcher`.
+*   **ConditionEvaluator**: Centralize start/cancel/finish evaluation to remove repeated code in controller and tests.
+
+### 5.3 Persistence + Queue Robustness
+*   **Schema versioning**: Add `schema_version` to session and per-job/per-event records; document migration behavior. (Implemented v1)
+*   **Queue atomic writes**: Mirror `MonitorStateStore._atomic_write` behavior in `ActionQueue._write`.
+*   **Recovery behavior**: Define queue recovery rules for `running` entries after crash (reset to pending).
+
+### 5.4 Test Consolidation + Coverage Targets
+*   **Test layout**: Reorganize tests into `tests/controller/`, `tests/persistence/`, `tests/actions/`, `tests/conditions/`.
+*   **Behavioral coverage**: Add focused tests for state resolution, action queue recovery, and atomic writes.
+
+### 5.5 Spec + Examples Alignment
+*   **SPEC.md**: Expand to include Action Queue, EventRecord lifecycle, and persistence schema.
+*   **Examples**: Update `examples/local_monitoring_example.py` to include queue usage and action execution paths. (Updated)
+
+### 5.6 Further Simplification + Deduplication
+*   **Template rendering**: Deduplicate `{var}` replacement helpers used in actions/conditions into `monitor.utils`.
+*   **Legacy wrappers**: Audit remaining controller legacy wrappers for removal or relocation.
+*   **Condition handling**: Extract a single helper for start/cancel/finish condition evaluation to shrink controller flow.
+*   **Event identity helper**: Centralize event key + event ID construction in `monitor.events` to remove controller-only logic.

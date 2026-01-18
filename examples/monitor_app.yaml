@@ -1,0 +1,65 @@
+monitor:
+  class_name: SlurmLogMonitor
+  poll_interval_seconds: 2
+
+state_store_dir: "./state"
+client:
+  class_name: LocalCommandClient
+run:
+  max_cycles: null
+  sleep_seconds: null
+
+jobs:
+  - job_id: job1
+    registration:
+      class_name: LocalJobRegistration
+      name: job1
+      command: ["bash", "./job1.sh"]
+      log_path: "job1_%j.log"
+      log_path_current: "job1_latest.log"
+      log_events:
+        - class_name: LogEvent
+          name: ready
+          pattern: READY
+          pattern_type: substring
+          state:
+            class_name: StartedState
+          mode: inline
+          action:
+            class_name: LogAction
+            message: "job {job_name} is ready"
+        - class_name: LogEvent
+          name: oom
+          pattern: "CUDA out of memory"
+          pattern_type: substring
+          state:
+            class_name: CrashState
+          mode: inline
+          action:
+            class_name: RestartAction
+            reason: "oom"
+            extra_args_append:
+              - "--retry={attempts}"
+            backend_config:
+              class_name: LocalActionBackend
+  - job_id: job2
+    registration:
+      class_name: LocalJobRegistration
+      name: job2
+      command: ["bash", "./job2.sh"]
+      log_path: "job2_%j.log"
+      log_path_current: "job2_latest.log"
+      start_condition:
+        class_name: CompositeCondition
+        mode: all
+        conditions:
+          - class_name: FileExistsCondition
+            path: "./ready.txt"
+            persistent_pass: true
+          - class_name: TimeoutCondition
+            timeout_seconds: 600
+      finish_condition:
+        class_name: FileContentCondition
+        path: "./done.txt"
+        pattern: "DONE"
+        mode: contains

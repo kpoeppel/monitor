@@ -5,33 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal, Any
 
-from compoconf import ConfigInterface, parse_config, register
+from compoconf import ConfigInterface, parse_config
 
-from monitor.actions import BaseMonitorAction, ActionContext, ActionResult
+from monitor.actions import BaseMonitorAction
 from monitor.conditions import MonitorConditionInterface
-
-
-@dataclass(kw_only=True)
-class EventActionConfig(ConfigInterface):
-    """Declarative binding between an event and a monitor action."""
-
-    class_name: str = "EventAction"
-    mode: Literal["inline", "queue"] = "inline"
-    action: BaseMonitorAction.cfgtype | None = None
-    conditions: list[MonitorConditionInterface.cfgtype] = field(default_factory=list)
-    aux: dict[str, Any] = field(default_factory=dict)
-
-
-@register
-class EventAction(BaseMonitorAction):
-    config: EventActionConfig
-
-    def __init__(self, config: EventActionConfig):
-        self.config = config
-        self._action = self.config.action.instantiate(BaseMonitorAction)
-
-    def execute(self, context: ActionContext) -> ActionResult:  # pragma: no cover
-        return self._action.execute(context)
 
 
 @dataclass
@@ -41,6 +18,7 @@ class EventActionBinding:
     action: BaseMonitorAction
     mode: Literal["inline", "queue"]
     conditions: list[MonitorConditionInterface]
+    action_id: str
 
 
 def _coerce_action_config(payload: Any) -> BaseMonitorAction.cfgtype:
@@ -51,27 +29,65 @@ def _coerce_action_config(payload: Any) -> BaseMonitorAction.cfgtype:
     raise TypeError(f"Unsupported action config payload: {payload!r}")  # pragma: no cover
 
 
-def instantiate_bindings(configs: list[Any]) -> list[EventActionBinding]:
-    """Instantiate action bindings from configuration."""
+def _coerce_condition_config(payload: Any) -> MonitorConditionInterface.cfgtype:
+    if hasattr(payload, "instantiate"):
+        return payload
+    if isinstance(payload, dict):
+        return parse_config(MonitorConditionInterface.cfgtype, payload)
+    raise TypeError(f"Unsupported condition config payload: {payload!r}")  # pragma: no cover
 
-    bindings: list[EventActionBinding] = []
-    for cfg in configs:
-        if isinstance(cfg, EventActionConfig):
-            if cfg.action is None:
-                raise ValueError("EventActionConfig requires 'action'")
-            action_cfg = _coerce_action_config(cfg.action)
-            condition_cfgs = cfg.conditions
-            mode = cfg.mode
-        else:
-            action_cfg = _coerce_action_config(cfg)
-            condition_cfgs = []
-            mode = "inline"
-        action = action_cfg.instantiate(BaseMonitorAction)
-        conditions = [
-            condition.instantiate(MonitorConditionInterface) for condition in condition_cfgs
-        ]
-        bindings.append(EventActionBinding(action=action, mode=mode, conditions=conditions))
-    return bindings
+def _build_action_id(
+    *,
+    action_name: str,
+    event_name: str,
+    kind: str,
+    index: int,
+    explicit: str | None = None,
+) -> str:
+    if explicit:
+        return explicit
+    return f"{kind}:{event_name}:{action_name}:{index}"
 
 
-__all__ = ["EventActionConfig", "EventActionBinding", "instantiate_bindings"]
+@dataclass(kw_only=True)
+class EventActionConfig(ConfigInterface):
+    """Single event/action specification (used by concrete event configs)."""
+
+    mode: Literal["inline", "queue"] = "inline"
+    action: BaseMonitorAction.cfgtype | None = None
+    conditions: list[MonitorConditionInterface.cfgtype] = field(default_factory=list)
+    action_id: str | None = None
+    aux: dict[str, Any] = field(default_factory=dict)
+
+
+def instantiate_action_binding(
+    config: EventActionConfig,
+    *,
+    event_name: str,
+    kind: str,
+    index: int,
+) -> EventActionBinding:
+    if config.action is None:
+        raise ValueError("EventActionConfig requires 'action'")
+    action_cfg = _coerce_action_config(config.action)
+    action = action_cfg.instantiate(BaseMonitorAction)
+    conditions = [
+        _coerce_condition_config(condition).instantiate(MonitorConditionInterface)
+        for condition in config.conditions
+    ]
+    action_id = _build_action_id(
+        action_name=action.config.class_name,
+        event_name=event_name,
+        kind=kind,
+        index=index,
+        explicit=config.action_id,
+    )
+    return EventActionBinding(
+        action=action,
+        mode=config.mode,
+        conditions=conditions,
+        action_id=action_id,
+    )
+
+
+__all__ = ["EventActionConfig", "EventActionBinding", "instantiate_action_binding"]

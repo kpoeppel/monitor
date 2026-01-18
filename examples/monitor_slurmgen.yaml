@@ -1,0 +1,42 @@
+monitor:
+  class_name: SlurmLogMonitor
+  poll_interval_seconds: 30
+
+state_store_dir: "./state"
+client:
+  class_name: SlurmGenClient
+  output_dir: "./slurm_out"
+  slurm:
+    template_path: "./templates/job.sbatch"
+    script_dir: "./slurm_out/scripts"
+    log_dir: "./slurm_out/logs"
+  slurm_client:
+    class_name: SlurmClient
+
+jobs:
+  - job_id: train
+    registration:
+      class_name: SlurmJobRegistration
+      name: train
+      command: ["python", "train.py"]
+      log_path: "./slurm_out/logs/train_%j.log"
+      log_path_current: "./slurm_out/logs/train_latest.log"
+      slurm:
+        sbatch:
+          partition: gpu
+          time: "0-04:00:00"
+      log_events:
+        - class_name: LogEvent
+          name: oom
+          pattern: "CUDA out of memory"
+          pattern_type: substring
+          state:
+            class_name: CrashState
+          mode: inline
+          action:
+            class_name: RestartAction
+            reason: "oom"
+            extra_args_append:
+              - "--retry={attempts}"
+            backend_config:
+              class_name: SlurmActionBackend

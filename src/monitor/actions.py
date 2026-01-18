@@ -7,29 +7,19 @@ from pathlib import Path
 import subprocess
 from typing import Any, Literal
 import logging
-from collections.abc import Mapping
-import re
 
 from compoconf import (
     ConfigInterface,
     RegistrableConfigInterface,
+    parse_config,
     register,
     register_interface,
 )
 
 from monitor.events import EventRecord, ActionResult, EventStatus
+from monitor.utils.template import replace_braced_keys
 
 LOGGER = logging.getLogger(__name__)
-
-_PATTERN = re.compile(r"(?<!\$)\{([^\{\}\$:]+)\}")
-
-
-def replace_braced_keys(s: str, values: Mapping[str, Any]) -> str:
-    def repl(m: re.Match[str]) -> str:
-        key = m.group(1)
-        return str(values[key]) if key in values else m.group(0)
-
-    return _PATTERN.sub(repl, s)
 
 
 @dataclass(kw_only=True)
@@ -108,46 +98,6 @@ class LogAction(BaseMonitorAction):
 
 
 @dataclass
-class _LegacyLogMessageActionConfig(LogActionConfig):
-    class_name: str = "LogMessageAction"  # pragma: no cover
-
-
-@register
-class LogMessageAction(LogAction):  # pragma: no cover
-    config: _LegacyLogMessageActionConfig  # pragma: no cover
-
-
-@dataclass
-class ShellActionConfig(ConfigInterface):
-    class_name: str = "ShellAction"
-    command: str = ""
-
-
-@register
-class ShellAction(BaseMonitorAction):
-    config: ShellActionConfig
-
-    def execute(self, context: ActionContext) -> ActionResult:
-        cmd = context.render(self.config.command)
-        try:
-            proc = subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                cwd=context.workspace,
-            )
-            if proc.returncode == 0:
-                return ActionResult(status="success", message="Shell command succeeded")
-            return ActionResult(
-                status="failed",
-                message=f"Shell command failed ({proc.returncode}): {proc.stderr.strip()}",
-            )
-        except Exception as e:  # pragma: no cover
-            return ActionResult(status="failed", message=f"Shell execution error: {e}")
-
-
-@dataclass
 class RunCommandActionConfig(ConfigInterface):
     class_name: str = "RunCommandAction"
     command: list[str] = field(default_factory=list)
@@ -185,10 +135,72 @@ class RunCommandAction(BaseMonitorAction):
             return ActionResult(status="failed", message=f"Command execution error: {e}")
 
 
+@register_interface
+class ActionBackendInterface(RegistrableConfigInterface):
+    """Backend-specific configuration for actions."""
+
+
 @dataclass
-class RestartActionConfig(ConfigInterface):
-    class_name: str = "RestartAction"
+class BaseActionBackendConfig(ConfigInterface):
+    class_name: str = "ActionBackend"
+    job_kind: str = ""
+
+
+@dataclass
+class LocalActionBackendConfig(BaseActionBackendConfig):
+    class_name: str = "LocalActionBackend"
+    job_kind: str = "local"
+
+
+@dataclass
+class SlurmActionBackendConfig(BaseActionBackendConfig):
+    class_name: str = "SlurmActionBackend"
+    job_kind: str = "slurm"
+    slurm: dict[str, Any] | None = None
+
+
+@register
+class ActionBackend(ActionBackendInterface):
+    config: BaseActionBackendConfig
+
+    def __init__(self, config: BaseActionBackendConfig) -> None:
+        self.config = config
+
+
+@register
+class LocalActionBackend(ActionBackendInterface):
+    config: LocalActionBackendConfig
+
+    def __init__(self, config: LocalActionBackendConfig) -> None:
+        self.config = config
+
+
+@register
+class SlurmActionBackend(ActionBackendInterface):
+    config: SlurmActionBackendConfig
+
+    def __init__(self, config: SlurmActionBackendConfig) -> None:
+        self.config = config
+
+
+@dataclass
+class BaseRestartActionConfig(ConfigInterface):
     reason: str = "auto_restart"
+    command: list[str] | None = None
+    log_path: str | None = None
+    log_path_current: str | None = None
+    extra_args: list[str] | None = None
+    extra_args_append: list[str] | None = None
+    metadata: dict[str, Any] | None = None
+    output_paths: list[str] | None = None
+    inactivity_threshold_seconds: float | None = None
+    log_to_file: bool | None = None
+    backend_config: ActionBackendInterface.cfgtype | None = None
+
+
+@dataclass
+class RestartActionConfig(BaseRestartActionConfig):
+    class_name: str = "RestartAction"
 
 
 @register
@@ -196,101 +208,184 @@ class RestartAction(BaseMonitorAction):
     config: RestartActionConfig
 
     def execute(self, context: ActionContext) -> ActionResult:
+        mismatch = _ensure_backend(context, self.config.backend_config)
+        if mismatch:
+            return mismatch
+        adjustments = _build_adjustments(self.config, context)
         return ActionResult(
             status="retry",
             message=self.config.reason,
+            metadata={"adjustments": adjustments},
         )
 
 
+def _render_adjustment_value(value: Any, context: ActionContext) -> Any:
+    if isinstance(value, str):
+        return context.render(value)
+    if isinstance(value, list):
+        return [_render_adjustment_value(item, context) for item in value]
+    if isinstance(value, dict):
+        return {key: _render_adjustment_value(item, context) for key, item in value.items()}
+    return value
+
+
+def _build_adjustments(
+    config: BaseRestartActionConfig | BaseDuplicateActionConfig,
+    context: ActionContext,
+) -> dict[str, Any]:
+    adjustments: dict[str, Any] = {}
+    if config.command is not None:
+        adjustments["command"] = [context.render(arg) for arg in config.command]
+    if config.log_path is not None:
+        adjustments["log_path"] = context.render(config.log_path)
+    if config.log_path_current is not None:
+        adjustments["log_path_current"] = context.render(config.log_path_current)
+    if config.extra_args is not None:
+        adjustments["extra_args"] = [context.render(arg) for arg in config.extra_args]
+    if config.extra_args_append is not None:
+        adjustments["extra_args_append"] = [context.render(arg) for arg in config.extra_args_append]
+    if config.metadata is not None:
+        adjustments["metadata"] = _render_adjustment_value(config.metadata, context)
+    if config.output_paths is not None:
+        adjustments["output_paths"] = [context.render(path) for path in config.output_paths]
+    if config.inactivity_threshold_seconds is not None:
+        adjustments["inactivity_threshold_seconds"] = config.inactivity_threshold_seconds
+    if config.log_to_file is not None:
+        adjustments["log_to_file"] = config.log_to_file
+    backend_config = _coerce_backend_config(getattr(config, "backend_config", None))
+    if backend_config is not None and getattr(backend_config, "slurm", None) is not None:
+        adjustments["slurm"] = _render_adjustment_value(getattr(backend_config, "slurm"), context)
+    return adjustments
+
+
+def _ensure_backend(
+    context: ActionContext,
+    backend_config: ActionBackendInterface.cfgtype | None,
+) -> ActionResult | None:
+    backend_config = _coerce_backend_config(backend_config)
+    if backend_config is None:
+        return None
+    expected_kind = getattr(backend_config, "job_kind", "")
+    if not expected_kind:
+        return None
+    job_kind = context.job_metadata.get("job_kind")
+    if job_kind and job_kind != expected_kind:
+        return ActionResult(
+            status="failed",
+            message=f"action requires job_kind '{expected_kind}' but got '{job_kind}'",
+        )
+    return None
+
+
+def _coerce_backend_config(
+    backend_config: ActionBackendInterface.cfgtype | None,
+) -> BaseActionBackendConfig | None:
+    if backend_config is None:
+        return None
+    if isinstance(backend_config, dict):
+        raise TypeError("backend_config must be parsed config, not dict")
+    return backend_config
+
+
 @dataclass
-class AutoExpRestartActionConfig(RestartActionConfig):
-    class_name: str = "AutoExpRestartAction"
+class BaseDuplicateActionConfig(ConfigInterface):
+    name_suffix: str = "_dup"
+    command: list[str] | None = None
+    log_path: str | None = None
+    log_path_current: str | None = None
+    extra_args: list[str] | None = None
+    extra_args_append: list[str] | None = None
+    metadata: dict[str, Any] | None = None
+    output_paths: list[str] | None = None
+    inactivity_threshold_seconds: float | None = None
+    log_to_file: bool | None = None
+    backend_config: ActionBackendInterface.cfgtype | None = None
+
+
+@dataclass
+class DuplicateActionConfig(BaseDuplicateActionConfig):
+    class_name: str = "DuplicateAction"
 
 
 @register
-class AutoExpRestartAction(RestartAction):
-    config: AutoExpRestartActionConfig
-
-
-@dataclass
-class PublishEventActionConfig(ConfigInterface):
-    class_name: str = "PublishEventAction"
-    event_name: str = "custom_event"
-    metadata: dict[str, Any] = field(default_factory=dict)
-    payload: dict[str, Any] = field(default_factory=dict)
-
-
-@register
-class PublishEventAction(BaseMonitorAction):
-    config: PublishEventActionConfig
+class DuplicateAction(BaseMonitorAction):
+    config: DuplicateActionConfig
 
     def execute(self, context: ActionContext) -> ActionResult:
+        mismatch = _ensure_backend(context, self.config.backend_config)
+        if mismatch:
+            return mismatch
+        adjustments = _build_adjustments(self.config, context)
+        name_suffix = context.render(self.config.name_suffix)
         return ActionResult(
             status="success",
-            message=f"Published event: {self.config.event_name}",
-            metadata={
-                "publish_event": {
-                    "name": self.config.event_name,
-                    "metadata": self.config.metadata,
-                    "payload": self.config.payload,
-                }
-            },
+            message="duplicate requested",
+            metadata={"duplicate_job": {"adjustments": adjustments, "name_suffix": name_suffix}},
         )
 
 
 @dataclass
-class RunAutoExpActionConfig(ConfigInterface):
-    class_name: str = "RunAutoExpAction"
-    script: str = ""
-    overrides: list[str] = field(default_factory=list)
-    config_path: str = ""
+class FinishActionConfig(ConfigInterface):
+    class_name: str = "FinishAction"
+    reason: str = "finished"
+    backend_config: ActionBackendInterface.cfgtype | None = None
 
 
 @register
-class RunAutoExpAction(BaseMonitorAction):
-    config: RunAutoExpActionConfig
+class FinishAction(BaseMonitorAction):
+    config: FinishActionConfig
 
     def execute(self, context: ActionContext) -> ActionResult:
-        import sys
-        cmd = [sys.executable, self.config.script]
-        if self.config.config_path:
-            cmd.extend(["--config-ref", self.config.config_path])
-        for override in self.config.overrides:
-            cmd.append(context.render(override))
-        cmd.append("--no-monitor")
-        session_id = context.variables.get("session_id", "unknown")
-        cmd.extend(["--plan-id", session_id])
-        cwd = str(context.workspace) if context.workspace else None
-        proc = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
-        if proc.returncode == 0:
-            return ActionResult(
-                status="success",
-                message=f"run_autoexp completed",
-                metadata={"stdout": proc.stdout.strip()},
-            )
-        return ActionResult(  # pragma: no cover
-            status="failed",
-            message=f"run_autoexp exited {proc.returncode}",
-            metadata={"stderr": proc.stderr.strip()},
+        mismatch = _ensure_backend(context, self.config.backend_config)
+        if mismatch:
+            return mismatch
+        return ActionResult(
+            status="success",
+            message=self.config.reason,
+            metadata={"finalize": "success"},
         )
 
 
-# Aliases for backwards compatibility
-RunAutoexpAction = RunAutoExpAction
-RunAutoexpActionConfig = RunAutoExpActionConfig
+@dataclass
+class CancelActionConfig(ConfigInterface):
+    class_name: str = "CancelAction"
+    reason: str = "cancelled"
+    backend_config: ActionBackendInterface.cfgtype | None = None
+
+
+@register
+class CancelAction(BaseMonitorAction):
+    config: CancelActionConfig
+
+    def execute(self, context: ActionContext) -> ActionResult:
+        mismatch = _ensure_backend(context, self.config.backend_config)
+        if mismatch:
+            return mismatch
+        return ActionResult(
+            status="success",
+            message=self.config.reason,
+            metadata={"finalize": "cancel"},
+        )
+
 
 __all__ = [
     "ActionContext",
     "ActionResult",
     "BaseMonitorAction",
+    "ActionBackendInterface",
+    "LocalActionBackendConfig",
+    "SlurmActionBackendConfig",
+    "ActionBackend",
+    "LocalActionBackend",
+    "SlurmActionBackend",
     "LogAction",
-    "ShellAction",
+    "RestartActionConfig",
     "RestartAction",
+    "DuplicateActionConfig",
+    "DuplicateAction",
+    "FinishActionConfig",
+    "FinishAction",
+    "CancelActionConfig",
+    "CancelAction",
     "RunCommandAction",
-    "AutoExpRestartAction",
-    "RunAutoExpAction",
-    "RunAutoexpAction",
-    "RunAutoexpActionConfig",
-    "PublishEventAction",
-    "PublishEventActionConfig",
 ]

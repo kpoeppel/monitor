@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -87,7 +89,16 @@ class ActionQueue:
 
     def _write(self, record: QueuedAction) -> None:
         path = self._record_path(record.event_id, record.queue_id)
-        path.write_text(json.dumps(record.to_dict(), indent=2), encoding="utf-8")
+        payload = json.dumps(record.to_dict(), indent=2)
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.tmp")
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp_path, path)
+        except Exception:  # pragma: no cover
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
 
     def list(self) -> list[QueuedAction]:
         records: list[QueuedAction] = []
@@ -174,6 +185,18 @@ class ActionQueue:
         record.updated_at = time.time()
         self._write(record)
         return True
+
+    def recover_running(self) -> int:
+        """Reset running entries to pending after a crash."""
+        recovered = 0
+        for record in self.list():
+            if record.status != "running":
+                continue
+            record.status = "pending"
+            record.updated_at = time.time()
+            self._write(record)
+            recovered += 1
+        return recovered
 
 
 __all__ = ["ActionQueue", "QueuedAction"]

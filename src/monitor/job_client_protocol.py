@@ -1,13 +1,13 @@
 """Protocol defining the job client interface required by monitor.
 
 This protocol allows monitor to work with different job execution backends:
-- SLURM (via slurm_gen.client.BaseSlurmClient)
+- SLURM (via monitor.slurm_client.BaseSlurmClient)
 - Local processes (via LocalCommandClient)
 - Other batch systems (PBS, LSF, etc.)
 """
 
 from __future__ import annotations
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -18,13 +18,24 @@ class JobClientProtocol(Protocol):
     allowing monitor to work with SLURM, local processes, or other batch systems.
     """
 
-    def submit(self, name: str, script_path: str, log_path: str) -> str:  # pragma: no cover
+    def submit(
+        self,
+        name: str,
+        command: list[str],
+        log_path: str,
+        extra_args: list[str] | None = None,
+        log_to_file: bool | None = None,
+        log_path_current: str | None = None,
+        slurm: dict[str, Any] | None = None,
+    ) -> str:  # pragma: no cover
         """Submit a single job.
 
         Args:
             name: Human-readable job name
-            script_path: Path to the script/command to execute
+        command: Command to execute (first element is the executable or script)
             log_path: Path where job output should be logged
+            log_path_current: Optional stable log path or symlink target
+            slurm: Optional slurm_gen configuration payload for script generation
 
         Returns:
             job_id: Unique identifier for the submitted job
@@ -37,17 +48,24 @@ class JobClientProtocol(Protocol):
     def submit_array(
         self,
         array_name: str,
-        script_path: str,
+        command: list[str],
         log_paths: list[str],
         task_names: list[str],
+        extra_args: list[str] | None = None,
+        start_index: int | None = None,
+        log_to_file: bool | None = None,
+        log_path_current: str | None = None,
+        slurm: dict[str, Any] | None = None,
     ) -> list[str]:  # pragma: no cover
         """Submit an array of jobs (multiple instances of same script).
 
         Args:
             array_name: Base name for the job array
-            script_path: Path to the script to execute for each task
+        command: Command to execute for each task
             log_paths: List of log paths, one per task
             task_names: List of task names, one per task
+            log_path_current: Optional stable log path or symlink target
+            slurm: Optional slurm_gen configuration payload for script generation
 
         Returns:
             List of job_ids, one per submitted task
@@ -81,31 +99,6 @@ class JobClientProtocol(Protocol):
         Returns:
             Dictionary mapping job_id -> status string
             Common statuses: "PENDING", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"
-        """
-        ...
-
-    def job_ids_by_name(self, name: str) -> list[str]:  # pragma: no cover
-        """Get all job IDs matching a given name.
-
-        Args:
-            name: Job name to search for
-
-        Returns:
-            List of job_ids with matching name
-        """
-        ...
-
-    def get_job(self, job_id: str):  # pragma: no cover
-        """Get detailed information about a specific job.
-
-        Args:
-            job_id: Job identifier
-
-        Returns:
-            Job object with details (implementation-specific)
-
-        Raises:
-            KeyError: If job_id not found
         """
         ...
 

@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 import time
 from enum import Enum
 from typing import Any
+import json
+import hashlib
 
 
 class EventStatus(Enum):
@@ -43,7 +45,7 @@ class EventRecord:
         self.status = status
         self.last_seen_ts = time.time()
         if note:
-            self.history.append({"ts": self.last_seen_ts, "status": status.value, "note": note}) # pragma: no cover
+            self.history.append({"ts": self.last_seen_ts, "status": status.value, "note": note})  # pragma: no cover
 
 
 @dataclass(kw_only=True)
@@ -55,4 +57,24 @@ class ActionResult:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-__all__ = ["EventStatus", "EventRecord", "ActionResult"]
+def event_key(job_id: str, event_name: str, metadata: dict[str, Any] | None = None) -> tuple[str, str]:
+    h = hashlib.md5()
+    h.update(json.dumps(metadata).encode("utf8"))
+    h = str(h.digest())[:16]
+    return (str(job_id), event_name, h)
+
+
+def build_event_id(
+    job_id: str,
+    event_name: str,
+    metadata: dict[str, Any] | None = None,
+    *,
+    now_ms: int | None = None,
+) -> str:
+    timestamp = int(time.time() * 1000) if now_ms is None else now_ms
+    if metadata and "checkpoint_iteration" in metadata:
+        return f"{job_id}:{event_name}:{metadata['checkpoint_iteration']}:{timestamp}"
+    return f"{job_id}:{event_name}:{timestamp}"
+
+
+__all__ = ["EventStatus", "EventRecord", "ActionResult", "event_key", "build_event_id"]
