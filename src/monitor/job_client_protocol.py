@@ -1,13 +1,21 @@
 """Protocol defining the job client interface required by monitor.
 
 This protocol allows monitor to work with different job execution backends:
-- SLURM (via monitor.slurm_client.BaseSlurmClient)
+- SLURM (via slurm_gen.client and monitor's SLURM adapter)
 - Local processes (via LocalCommandClient)
 - Other batch systems (PBS, LSF, etc.)
 """
 
 from __future__ import annotations
+
 from typing import Any, Protocol, runtime_checkable
+
+from compoconf import RegistrableConfigInterface, register_interface
+
+
+@register_interface
+class JobClientInterface(RegistrableConfigInterface):
+    """Registrable interface for job execution backends."""
 
 
 @runtime_checkable
@@ -103,4 +111,4 @@ class JobClientProtocol(Protocol):
         ...
 
 
-__all__ = ["JobClientProtocol"]
+__all__ = ["JobClientProtocol", "JobClientInterface"]

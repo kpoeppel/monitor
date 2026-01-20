@@ -13,8 +13,8 @@ so a single monitor loop can be restarted safely.
 - **LogEventConfig**: Log pattern + action + action conditions.
 - **Actions**: `LogAction`, `RunCommandAction`, `RestartAction`, `DuplicateAction`,
   `CancelAction`, `FinishAction`.
-- **Clients**: `LocalCommandClient` for local execution, `SlurmGenClient` for SLURM
-  with `slurm_gen` script rendering.
+- **Clients**: `LocalCommandClient` for local execution, `SlurmJobClient` for SLURM
+  with external `slurm_gen` script rendering and submission clients.
 
 ## Features
 
@@ -163,11 +163,11 @@ Conditions return boolean `passed` only; no blocking/wait states. Use:
 
 ## SLURM (slurm_gen)
 
-Use `SlurmGenClient` to render scripts and submit through SLURM:
+Use `SlurmJobClient` to render scripts and submit through SLURM:
 
 ```yaml
 client:
-  class_name: SlurmGenClient
+  class_name: SlurmJobClient
   output_dir: "./slurm_out"
   slurm:
     template_path: "./templates/job.sbatch"
@@ -176,4 +176,8 @@ client:
     command: ["python", "train.py", "--profile=fast"]
     sbatch:
       gres: "gpu:1"
+  slurm_client:
+    class_name: SlurmClient
 ```
+
+Ensure `slurm_gen` is installed (or on `PYTHONPATH`) for SLURM usage.

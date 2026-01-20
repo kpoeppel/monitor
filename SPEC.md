@@ -72,5 +72,5 @@ registration:
 
 ## Backends
 - `LocalCommandClient` executes processes locally.
-- `SlurmGenClient` renders sbatch scripts via `slurm_gen` and submits with a
+- `SlurmJobClient` renders sbatch scripts via `slurm_gen` and submits with a
   configured SLURM client.

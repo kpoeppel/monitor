@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import yaml
 from compoconf import parse_config
 
-from monitor.local_client import LocalCommandClient
 from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop, MonitorLoopConfig
+from monitor.job_client_protocol import JobClientInterface
 from monitor.submission import parse_job_registration
 
 
@@ -18,14 +18,6 @@ from monitor.submission import parse_job_registration
 class JobConfig:
     job_id: str
     registration: dict[str, Any]
-
-
-@dataclass(kw_only=True)
-class ClientConfig:
-    class_name: Literal["LocalCommandClient", "SlurmGenClient"] = "LocalCommandClient"
-    slurm: dict[str, Any] = field(default_factory=dict)
-    slurm_client: dict[str, Any] = field(default_factory=dict)
-    output_dir: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -38,7 +30,7 @@ class RunConfig:
 class MonitorAppConfig:
     monitor: Any
     jobs: list[JobConfig] = field(default_factory=list)
-    client: ClientConfig = field(default_factory=ClientConfig)
+    client: Any = None
     state_store_dir: str | None = None
     run: RunConfig = field(default_factory=RunConfig)
     raw: dict[str, Any] | None = None
@@ -50,17 +42,21 @@ def load_app_config(path: str | Path) -> MonitorAppConfig:
 
 
 def parse_app_config(payload: dict[str, Any]) -> MonitorAppConfig:
+    _import_registry()
     jobs_payload = payload.get("jobs", [])
     jobs: list[JobConfig] = []
     for job in jobs_payload:
         reg_payload = job.get("registration", {})
         jobs.append(JobConfig(job_id=str(job["job_id"]), registration=dict(reg_payload)))
     client_payload = payload.get("client", {})
+    if not client_payload:
+        client_payload = {"class_name": "LocalCommandClient"}
+    client_config = parse_config(JobClientInterface.cfgtype, client_payload)
     run_payload = payload.get("run", {})
     return MonitorAppConfig(
         monitor=payload["monitor"],
         jobs=jobs,
-        client=ClientConfig(**client_payload) if client_payload else ClientConfig(),
+        client=client_config,
         state_store_dir=payload.get("state_store_dir"),
         run=RunConfig(**run_payload) if run_payload else RunConfig(),
         raw=payload,
@@ -75,7 +71,9 @@ def build_loop(config: MonitorAppConfig) -> MonitorLoop:
         monitor_cfg = parse_config(MonitorLoopConfig, monitor_cfg)
     if isinstance(monitor_cfg, MonitorLoopConfig):
         poll_interval = monitor_cfg.poll_interval_seconds
-    client = _build_client(config.client)
+    if config.client is None:
+        config.client = parse_config(JobClientInterface.cfgtype, {"class_name": "LocalCommandClient"})
+    client = config.client.instantiate(JobClientInterface)
     if not config.state_store_dir:
         raise ValueError("state_store_dir is required for monitor loop")
     store = JobFileStore(config.state_store_dir)
@@ -88,21 +86,6 @@ def sync_loop(loop: MonitorLoop, config: MonitorAppConfig) -> None:
         raise ValueError("state_store_dir is required for monitor loop")
     store = JobFileStore(config.state_store_dir)
     _sync_jobs(store, config.jobs)
-
-
-def _build_client(config: ClientConfig) -> LocalCommandClient:
-    if config.class_name == "LocalCommandClient":
-        return LocalCommandClient()
-    if config.class_name == "SlurmGenClient":
-        from monitor.slurm_gen_client import SlurmGenClient, SlurmGenClientConfig
-
-        slurm_config = SlurmGenClientConfig(
-            slurm=config.slurm,
-            slurm_client=config.slurm_client,
-            output_dir=config.output_dir,
-        )
-        return SlurmGenClient(slurm_config)
-    raise ValueError(f"Unsupported client: {config.class_name}")
 
 
 def _build_registration(payload: dict[str, Any]) -> Any:
@@ -128,6 +111,12 @@ def _sync_jobs(store: JobFileStore, jobs: list[JobConfig]) -> None:
 def _import_registry() -> None:
     import monitor.actions  # noqa: F401
     import monitor.conditions  # noqa: F401
+    import monitor.local_client  # noqa: F401
+    try:  # slurm_gen is optional
+        import monitor.slurm_job_client  # noqa: F401
+    except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional slurm_gen install
+        if exc.name != "slurm_gen":
+            raise
     import monitor.submission  # noqa: F401
 
 

@@ -2,46 +2,36 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from monitor.slurm_client import FakeSlurmClient, FakeSlurmClientConfig
+from compoconf import parse_config
+
+import monitor.slurm_job_client  # noqa: F401
+from monitor.job_client_protocol import JobClientInterface
 
 
-def test_fake_slurm_submit_and_squeue(tmp_path: Path) -> None:
-    client = FakeSlurmClient(FakeSlurmClientConfig())
-    job_id = client.submit("job", "script.sbatch", str(tmp_path / "job.log"))
+def test_slurm_job_client_submit_with_fake_client(tmp_path: Path) -> None:
+    template_path = tmp_path / "job.sbatch"
+    template_path.write_text(
+        "#!/bin/bash\n{sbatch_directives}\n{command}\n",
+        encoding="utf-8",
+    )
+    client_config = parse_config(
+        JobClientInterface.cfgtype,
+        {
+            "class_name": "SlurmJobClient",
+            "slurm": {
+                "template_path": str(template_path),
+                "script_dir": str(tmp_path / "scripts"),
+                "log_dir": str(tmp_path / "logs"),
+            },
+            "slurm_client": {"class_name": "FakeSlurmClient"},
+        },
+    )
+    client = client_config.instantiate(JobClientInterface)
+    job_id = client.submit(
+        name="job",
+        command=["echo", "hi"],
+        log_path=str(tmp_path / "logs" / "job_%j.log"),
+    )
+    assert job_id == "1"
     statuses = client.squeue()
     assert statuses[job_id] == "PENDING"
-    client.set_state(job_id, "RUNNING")
-    statuses = client.squeue()
-    assert statuses[job_id] == "RUNNING"
-
-
-def test_fake_slurm_submit_array(tmp_path: Path) -> None:
-    client = FakeSlurmClient(FakeSlurmClientConfig())
-    job_ids = client.submit_array(
-        array_name="arr",
-        script_path="array.sbatch",
-        log_paths=[str(tmp_path / "a1.log"), str(tmp_path / "a2.log")],
-        task_names=["t1", "t2"],
-        start_index=1,
-    )
-    assert job_ids == ["1_1", "1_2"]
-    statuses = client.squeue()
-    assert statuses["1_1"] == "PENDING"
-
-
-def test_fake_slurm_cancel_remove() -> None:
-    client = FakeSlurmClient(FakeSlurmClientConfig())
-    job_id = client.submit("job", "script.sbatch", "job.log")
-    client.cancel(job_id)
-    assert client.squeue()[job_id] == "CANCELLED"
-    client.remove(job_id)
-    assert job_id not in client.squeue()
-
-
-def test_fake_slurm_lookup_and_register() -> None:
-    client = FakeSlurmClient(FakeSlurmClientConfig())
-    job_id = client.register_job("42", "name", "script.sbatch", "log.log", state="RUNNING")
-    assert job_id == "42"
-    assert client.job_ids_by_name("name") == ["42"]
-    job = client.get_job("42")
-    assert job.state == "RUNNING"

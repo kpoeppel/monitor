@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 def test_monitor_loop_slurm_gen_submission(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
-    slurm_gen_path = root / "slurm_gen" / "src"
-    if str(slurm_gen_path) not in sys.path:
-        sys.path.insert(0, str(slurm_gen_path))
+    from compoconf import parse_config
 
+    import monitor.slurm_job_client  # noqa: F401
+    from monitor.job_client_protocol import JobClientInterface
     from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop
-    from monitor.slurm_gen_client import SlurmGenClient, SlurmGenClientConfig
     from monitor.submission import SlurmJobRegistrationConfig
     from slurm_gen import SlurmConfig
 
@@ -26,11 +23,15 @@ def test_monitor_loop_slurm_gen_submission(tmp_path: Path) -> None:
         "log_dir": str(tmp_path / "logs"),
         "command": ["python", "train.py", "--profile=fast"],
     }
-    client_config = SlurmGenClientConfig(
-        slurm=slurm_config,
-        slurm_client={"class_name": "FakeSlurmClient"},
+    client_config = parse_config(
+        JobClientInterface.cfgtype,
+        {
+            "class_name": "SlurmJobClient",
+            "slurm": slurm_config,
+            "slurm_client": {"class_name": "FakeSlurmClient"},
+        },
     )
-    client = SlurmGenClient(client_config)
+    client = client_config.instantiate(JobClientInterface)
     store = JobFileStore(tmp_path / "state")
     loop = MonitorLoop(store, client, poll_interval_seconds=0.1)
 

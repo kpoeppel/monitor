@@ -4,7 +4,7 @@ monitor:
 
 state_store_dir: "./state"
 client:
-  class_name: SlurmGenClient
+  class_name: SlurmJobClient
   output_dir: "./slurm_out"
   slurm:
     template_path: "./templates/job.sbatch"

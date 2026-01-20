@@ -4,15 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import sys
 import time
 from pathlib import Path
-
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-slurm_gen_path = ROOT / "slurm_gen" / "src"
-if slurm_gen_path.exists():
-    sys.path.insert(0, str(slurm_gen_path))
 
 from monitor.app import build_loop, load_app_config, sync_loop
 

@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from monitor.job_client_protocol import JobClientProtocol
+from compoconf import ConfigInterface, register
+
+from monitor.job_client_protocol import JobClientInterface, JobClientProtocol
 from monitor.utils.paths import resolve_log_path, update_log_symlink
 
 
@@ -33,7 +35,13 @@ class LocalJob:
     submitted_at: float = field(default_factory=time.time)
 
 
-class LocalCommandClient(JobClientProtocol):
+@dataclass(kw_only=True)
+class LocalCommandClientConfig(ConfigInterface):
+    class_name: str = "LocalCommandClient"
+
+
+@register
+class LocalCommandClient(JobClientInterface):
     """Execute and monitor local bash commands as background processes.
 
     This client implements the JobClientProtocol to allow monitor to track
@@ -52,7 +60,10 @@ class LocalCommandClient(JobClientProtocol):
         - No array job support for start_index parameter
     """
 
-    def __init__(self) -> None:
+    config_class = LocalCommandClientConfig
+
+    def __init__(self, config: LocalCommandClientConfig | None = None) -> None:
+        self.config = config or LocalCommandClientConfig()
         self._jobs: dict[str, LocalJob] = {}
         self._job_counter = 0
 

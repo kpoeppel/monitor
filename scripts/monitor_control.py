@@ -5,15 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
-slurm_gen_path = ROOT / "slurm_gen" / "src"
-if slurm_gen_path.exists():
-    sys.path.insert(0, str(slurm_gen_path))
 
 from compoconf import parse_config
 
@@ -54,6 +48,7 @@ def main() -> None:
         job_text = Path(job_path).read_text(encoding="utf-8")
         if job_path.endswith((".yaml", ".yml")):
             import yaml
+
             payload = yaml.safe_load(job_text)
         else:
             payload = json.loads(job_text)
