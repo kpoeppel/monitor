@@ -9,7 +9,7 @@ so a single monitor loop can be restarted safely.
 - **MonitorLoop**: Synchronous loop that loads job files, evaluates conditions,
   submits/cancels jobs, and executes actions inline.
 - **JobFileStore**: One `.job.json` file per job registration inside a state dir.
-- **JobRegistrationConfig**: Per-job config (command, log paths, conditions, log events).
+- **JobConfig**: Per-job config (command, log paths, conditions, log events).
 - **LogEventConfig**: Log pattern + action + action conditions.
 - **Actions**: `LogAction`, `RunCommandAction`, `RestartAction`, `DuplicateAction`,
   `CancelAction`, `FinishAction`.
@@ -31,7 +31,7 @@ from monitor import LocalCommandClient
 from monitor.actions import LogActionConfig, RestartActionConfig, LocalActionBackendConfig
 from monitor.actions import LogEventConfig
 from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop
-from monitor.submission import LocalJobRegistrationConfig
+from monitor.submission import LocalJobConfig
 
 store = JobFileStore("./state")
 client = LocalCommandClient()
@@ -40,7 +40,7 @@ loop = MonitorLoop(store, client, poll_interval_seconds=2)
 store.upsert(
     JobRecordConfig(
         job_id="train-1",
-        registration=LocalJobRegistrationConfig(
+        registration=LocalJobConfig(
             name="train-1",
             command=["bash", "./train.sh"],
             log_path="./train_%t.log",
@@ -85,7 +85,7 @@ client:
 jobs:
   - job_id: job1
     registration:
-      class_name: LocalJobRegistration
+      class_name: LocalJob
       name: job1
       command: ["bash", "./job1.sh"]
       log_path: "./logs/job1_%t.log"

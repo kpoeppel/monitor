@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 import hashlib
@@ -12,13 +12,7 @@ import subprocess
 import time
 from typing import Any, Literal
 
-from compoconf import (
-    ConfigInterface,
-    RegistrableConfigInterface,
-    parse_config,
-    register,
-    register_interface,
-)
+from compoconf import ConfigInterface, RegistrableConfigInterface, register, register_interface, MissingValue
 
 from monitor.conditions import MonitorConditionInterface
 from monitor.utils.template import replace_braced_keys
@@ -27,12 +21,16 @@ from slurm_gen import SlurmConfig
 LOGGER = logging.getLogger(__name__)
 
 
-class EventStatus(Enum):
-    """Lifecycle status of a detected event."""
+SPECIAL_ACTIONS = ("restart", "cancel", "finish", "noop")
 
-    PENDING = "pending"
-    PROCESSED = "processed"
-    FAILED = "failed"
+@dataclass(kw_only=True)
+class ActionResult:
+    """Outcome of an action execution."""
+
+    special: Literal["cancel", "finish", "restart", "noop"] = "noop"
+    message: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
 
 
 @dataclass(kw_only=True)
@@ -42,7 +40,6 @@ class EventRecord:
     event_id: str
     name: str
     source: str
-    status: EventStatus = EventStatus.PENDING
     count: int = 1
     first_seen_ts: float = field(default_factory=time.time)
     last_seen_ts: float = field(default_factory=time.time)
@@ -57,21 +54,11 @@ class EventRecord:
         if payload:
             self.payload.update(payload)
 
-    def set_status(self, status: EventStatus, *, note: str | None = None) -> None:
+    def set_status(self, *, note: str | None = None) -> None:
         """Move event into a new lifecycle state and append optional note."""
-        self.status = status
         self.last_seen_ts = time.time()
         if note:
-            self.history.append({"ts": self.last_seen_ts, "status": status.value, "note": note})  # pragma: no cover
-
-
-@dataclass(kw_only=True)
-class ActionResult:
-    """Outcome of an action execution."""
-
-    status: str  # success, retry, failed
-    message: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
+            self.history.append({"ts": self.last_seen_ts, "note": note})  # pragma: no cover
 
 
 def event_key(job_id: str, event_name: str, metadata: dict[str, Any] | None = None) -> tuple[str, str]:
@@ -128,21 +115,8 @@ class BaseMonitorAction(RegistrableConfigInterface):
     def __init__(self, config: ConfigInterface) -> None:
         self.config = config
 
-    def describe(self, job_id: str, metadata: dict[str, Any]) -> dict[str, Any]:  # pragma: no cover
-        payload = asdict(self.config)
-        payload.update({"type": self.kind})
-        return payload
-
     def execute(self, context: ActionContext) -> ActionResult:  # pragma: no cover
         raise NotImplementedError
-
-    def update_event(self, event: EventRecord, result: ActionResult) -> None:
-        if result.status == "success":
-            event.set_status(EventStatus.PROCESSED, note=result.message)
-        elif result.status == "retry":
-            event.set_status(EventStatus.PENDING, note=result.message)
-        else:
-            event.set_status(EventStatus.FAILED, note=result.message)
 
 
 @dataclass
@@ -167,7 +141,7 @@ class LogAction(BaseMonitorAction):
             LOGGER.error(msg)
         else:
             LOGGER.info(msg)
-        return ActionResult(status="success", message=msg)
+        return ActionResult(message=msg)
 
 
 @dataclass
@@ -257,20 +231,7 @@ class SlurmActionBackend(ActionBackendInterface):
 
 
 @dataclass
-class BaseRestartActionConfig(ConfigInterface):
-    reason: str = "auto_restart"
-    command: list[str] | None = None
-    log_path: str | None = None
-    log_path_current: str | None = None
-    extra_args: list[str] | None = None
-    extra_args_append: list[str] | None = None
-    metadata: dict[str, Any] | None = None
-    log_to_file: bool | None = None
-    backend_config: ActionBackendInterface.cfgtype | None = None
-
-
-@dataclass
-class RestartActionConfig(BaseRestartActionConfig):
+class RestartActionConfig:
     class_name: str = "RestartAction"
 
 
@@ -282,47 +243,10 @@ class RestartAction(BaseMonitorAction):
         mismatch = _ensure_backend(context, self.config.backend_config)
         if mismatch:
             return mismatch
-        adjustments = _build_adjustments(self.config, context)
         return ActionResult(
             status="retry",
             message=self.config.reason,
-            metadata={"adjustments": adjustments},
         )
-
-
-def _render_adjustment_value(value: Any, context: ActionContext) -> Any:
-    if isinstance(value, str):
-        return context.render(value)
-    if isinstance(value, list):
-        return [_render_adjustment_value(item, context) for item in value]
-    if isinstance(value, dict):
-        return {key: _render_adjustment_value(item, context) for key, item in value.items()}
-    return value
-
-
-def _build_adjustments(
-    config: BaseRestartActionConfig | BaseDuplicateActionConfig,
-    context: ActionContext,
-) -> dict[str, Any]:
-    adjustments: dict[str, Any] = {}
-    if config.command is not None:
-        adjustments["command"] = [context.render(arg) for arg in config.command]
-    if config.log_path is not None:
-        adjustments["log_path"] = context.render(config.log_path)
-    if config.log_path_current is not None:
-        adjustments["log_path_current"] = context.render(config.log_path_current)
-    if config.extra_args is not None:
-        adjustments["extra_args"] = [context.render(arg) for arg in config.extra_args]
-    if config.extra_args_append is not None:
-        adjustments["extra_args_append"] = [context.render(arg) for arg in config.extra_args_append]
-    if config.metadata is not None:
-        adjustments["metadata"] = _render_adjustment_value(config.metadata, context)
-    if config.log_to_file is not None:
-        adjustments["log_to_file"] = config.log_to_file
-    backend_config = _coerce_backend_config(getattr(config, "backend_config", None))
-    if backend_config is not None and getattr(backend_config, "slurm", None) is not None:
-        adjustments["slurm"] = _render_adjustment_value(getattr(backend_config, "slurm"), context)
-    return adjustments
 
 
 def _ensure_backend(
@@ -355,41 +279,6 @@ def _coerce_backend_config(
 
 
 @dataclass
-class BaseDuplicateActionConfig(ConfigInterface):
-    name_suffix: str = "_dup"
-    command: list[str] | None = None
-    log_path: str | None = None
-    log_path_current: str | None = None
-    extra_args: list[str] | None = None
-    extra_args_append: list[str] | None = None
-    metadata: dict[str, Any] | None = None
-    log_to_file: bool | None = None
-    backend_config: ActionBackendInterface.cfgtype | None = None
-
-
-@dataclass
-class DuplicateActionConfig(BaseDuplicateActionConfig):
-    class_name: str = "DuplicateAction"
-
-
-@register
-class DuplicateAction(BaseMonitorAction):
-    config: DuplicateActionConfig
-
-    def execute(self, context: ActionContext) -> ActionResult:
-        mismatch = _ensure_backend(context, self.config.backend_config)
-        if mismatch:
-            return mismatch
-        adjustments = _build_adjustments(self.config, context)
-        name_suffix = context.render(self.config.name_suffix)
-        return ActionResult(
-            status="success",
-            message="duplicate requested",
-            metadata={"duplicate_job": {"adjustments": adjustments, "name_suffix": name_suffix}},
-        )
-
-
-@dataclass
 class FinishActionConfig(ConfigInterface):
     class_name: str = "FinishAction"
     reason: str = "finished"
@@ -400,10 +289,7 @@ class FinishActionConfig(ConfigInterface):
 class FinishAction(BaseMonitorAction):
     config: FinishActionConfig
 
-    def execute(self, context: ActionContext) -> ActionResult:
-        mismatch = _ensure_backend(context, self.config.backend_config)
-        if mismatch:
-            return mismatch
+    def execute(self, context: ActionContext) -> :
         return ActionResult(
             status="success",
             message=self.config.reason,
@@ -433,25 +319,38 @@ class CancelAction(BaseMonitorAction):
         )
 
 
-@dataclass(kw_only=True)
-class EventActionConfig(ConfigInterface):
-    """Single event/action specification (used by concrete event configs)."""
-
+@dataclass
+class EventConfig:
+    name: str = ""
     action: BaseMonitorAction.cfgtype | None = None
-    conditions: list[MonitorConditionInterface.cfgtype] = field(default_factory=list)
-    action_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    condition: MonitorConditionInterface.cfgtype | None = None
 
 
 @dataclass
-class LogEventConfig(EventActionConfig):
+class LogEventConfig(EventConfig):
     """Configuration for a log-triggered event and action."""
 
-    class_name: str = "LogEvent"
-    name: str = ""
     pattern: str = ""
     pattern_type: Literal["substring", "regex"] = "substring"
-    metadata: dict[str, Any] = field(default_factory=dict)
     extract_groups: dict[str, int | str] = field(default_factory=dict)
+
+
+@dataclass
+class StateEventConfig(EventConfig):
+    """Configuration for a state-triggered event and action."""
+
+    transition: tuple[str, str] = field(default_factory=MissingValue)
+
+    def __post_init__(self):
+        assert self.transition is not MissingValue
+
+
+class StateEvent:
+    config: StateEventConfig
+
+    def __init__(self, config: StateEventConfig):
+        self.config = config
 
 
 @dataclass
@@ -461,64 +360,6 @@ class EventActionBinding:
     action: BaseMonitorAction
     conditions: list[MonitorConditionInterface]
     action_id: str
-
-
-def _coerce_action_config(payload: Any) -> BaseMonitorAction.cfgtype:
-    if hasattr(payload, "instantiate"):
-        return payload
-    if isinstance(payload, dict):
-        return parse_config(BaseMonitorAction.cfgtype, payload)
-    raise TypeError(f"Unsupported action config payload: {payload!r}")  # pragma: no cover
-
-
-def _coerce_condition_config(payload: Any) -> MonitorConditionInterface.cfgtype:
-    if hasattr(payload, "instantiate"):
-        return payload
-    if isinstance(payload, dict):
-        return parse_config(MonitorConditionInterface.cfgtype, payload)
-    raise TypeError(f"Unsupported condition config payload: {payload!r}")  # pragma: no cover
-
-
-def _build_action_id(
-    *,
-    action_name: str,
-    event_name: str,
-    kind: str,
-    index: int,
-    explicit: str | None = None,
-) -> str:
-    if explicit:
-        return explicit
-    return f"{kind}:{event_name}:{action_name}:{index}"
-
-
-def instantiate_action_binding(
-    config: EventActionConfig,
-    *,
-    event_name: str,
-    kind: str,
-    index: int,
-) -> EventActionBinding:
-    if config.action is None:
-        raise ValueError("EventActionConfig requires 'action'")
-    action_cfg = _coerce_action_config(config.action)
-    action = action_cfg.instantiate(BaseMonitorAction)
-    conditions = [
-        _coerce_condition_config(condition).instantiate(MonitorConditionInterface)
-        for condition in config.conditions
-    ]
-    action_id = _build_action_id(
-        action_name=action.config.class_name,
-        event_name=event_name,
-        kind=kind,
-        index=index,
-        explicit=config.action_id,
-    )
-    return EventActionBinding(
-        action=action,
-        conditions=conditions,
-        action_id=action_id,
-    )
 
 
 __all__ = [
@@ -539,15 +380,11 @@ __all__ = [
     "LogAction",
     "RestartActionConfig",
     "RestartAction",
-    "DuplicateActionConfig",
-    "DuplicateAction",
     "FinishActionConfig",
     "FinishAction",
     "CancelActionConfig",
     "CancelAction",
     "RunCommandAction",
-    "EventActionConfig",
     "LogEventConfig",
     "EventActionBinding",
-    "instantiate_action_binding",
 ]

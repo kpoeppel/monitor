@@ -2,7 +2,7 @@
   "class_name": "JobRecord",
   "job_id": "job2",
   "registration": {
-    "class_name": "LocalJobRegistration",
+    "class_name": "LocalJob",
     "name": "job2",
     "command": [
       "bash",

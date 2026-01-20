@@ -1,16 +1,16 @@
 # Slurm-Gen Integration Plan
 
-Goal: Reintroduce optional `slurm_gen`-based script generation so SLURM jobs can be configured from a structured config, while still supporting plain `command` submissions. This enables overrides by mutating the slurm_gen config (including the final command).
+Goal: Reintroduce optional `slurm_gen`-based script generation so SLURM jobs can be configured from a structured config, while still supporting plain `command` submissions. This enables overrides by mutating the slurm_gen config (including the final command). The SLURM client implementation should live in `slurm_gen` and be used as an external dependency.
 
 ## Proposed Design
 
-- **New client**: `SlurmGenClient` implements `JobClientProtocol`.
+- **New client**: `SlurmJobClient` implements `JobClientProtocol`.
   - Inputs: `slurm_gen` config payload + optional overrides.
-  - Output: generated sbatch script path + submit via existing slurm client.
+  - Output: generated sbatch script path + submit via slurm_gen client.
   - Keeps parity with `LocalCommandClient` signatures (uses `command` for legacy path).
 
 - **Config model changes**
-  - Add `slurm` block to `JobRegistration` for slurm-gen config.
+  - Add `slurm` block to `Job` for slurm-gen config.
   - Keep `command: list[str]` for direct submissions (existing behavior).
   - Allow `command` overrides in `slurm` block (e.g., `slurm.command` or `slurm.run.command`) to change the final executable arguments.
 
@@ -28,7 +28,7 @@ Goal: Reintroduce optional `slurm_gen`-based script generation so SLURM jobs can
 
 - **Top-level YAML support**
   - Extend `MonitorAppConfig` so jobs can include `slurm` config.
-  - Add `client.class_name: SlurmGenClient` and a `client.slurm_gen` config for defaults/output dir.
+  - Add `client.class_name: SlurmJobClient` and a `client.slurm` config for defaults/output dir.
 
 - **Docs + Examples**
   - Add a YAML example with `slurm` block and overrides.
@@ -37,11 +37,11 @@ Goal: Reintroduce optional `slurm_gen`-based script generation so SLURM jobs can
 ## Implementation Steps
 
 1. **Add config structures**
-   - `SlurmGenClientConfig`, `SlurmGenJobConfig` (for job-level config block).
-   - Extend `JobRegistration` and persistence to store `slurm` block.
+   - `SlurmJobClientConfig`, `SlurmJobConfig` (for job-level config block).
+   - Extend `Job` and persistence to store `slurm` block.
 
-2. **Implement SlurmGenClient**
-   - Accept base config, job overrides, output dir, and optional slurm client.
+2. **Implement SlurmJobClient**
+   - Accept base config, job overrides, output dir, and slurm_gen client.
    - Generate sbatch via slurm_gen, submit with log paths.
 
 3. **Apply adjustments**
@@ -49,8 +49,8 @@ Goal: Reintroduce optional `slurm_gen`-based script generation so SLURM jobs can
    - Merge logic in `Executor._apply_adjustments`.
 
 4. **Wire into YAML app loader**
-   - Parse `slurm` block and pass to `JobRegistration`.
-   - Add `client.class_name` support for `SlurmGenClient`.
+   - Parse `slurm` block and pass to `Job`.
+   - Add `client.class_name` support for `SlurmJobClient`.
 
 5. **Docs + tests**
    - Unit tests for config merge and submission path selection.

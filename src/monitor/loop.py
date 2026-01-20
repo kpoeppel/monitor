@@ -14,7 +14,7 @@ from compoconf import ConfigInterface, parse_config
 from monitor.conditions import ConditionContext, ConditionResult, MonitorConditionInterface
 from monitor.actions import EventRecord, build_event_id, instantiate_action_binding, LogEventConfig
 from monitor.job_client_protocol import JobClientProtocol
-from monitor.submission import JobRegistrationInterface
+from monitor.submission import JobInterface
 from monitor.utils.paths import resolve_log_path
 
 
@@ -22,7 +22,7 @@ SCHEMA_VERSION = 1
 
 
 @dataclass
-class JobRuntimeConfig(ConfigInterface):
+class JobRuntimeConfig:
     class_name: str = "JobRuntime"
     submitted: bool = False
     attempts: int = 0
@@ -35,10 +35,10 @@ class JobRuntimeConfig(ConfigInterface):
 
 
 @dataclass
-class JobRecordConfig(ConfigInterface):
+class JobRecordConfig:
     class_name: str = "JobRecord"
     job_id: str = ""
-    registration: JobRegistrationInterface.cfgtype | None = None
+    definition: JobInterface.cfgtype | None = None
     runtime: JobRuntimeConfig = field(default_factory=JobRuntimeConfig)
     schema_version: int = SCHEMA_VERSION
 
@@ -90,12 +90,6 @@ class JobFileStore:
         return self.root / f"{job_id}.job.json"
 
 
-@dataclass
-class MonitorLoopConfig(ConfigInterface):
-    class_name: str = "MonitorLoop"
-    poll_interval_seconds: float = 60.0
-
-
 class MonitorLoop:
     """Synchronous monitor loop that evaluates jobs and actions inline."""
 
@@ -114,11 +108,13 @@ class MonitorLoop:
     def observe_once(self) -> None:
         statuses = self._client.squeue()
         for job in self._store.load_all():
-            if job.registration is None:
+            if job.definition is None:
                 continue
             runtime = job.runtime
             runtime_id = runtime.runtime_job_id
-            runtime.last_status = statuses.get(runtime_id) if runtime_id else None
+            new_status = statuses.get(runtime_id) if runtime_id else None
+            self._status_action(job, runtime.last_status, new_status)
+            runtime.last_status = new_status
             if not runtime.submitted:
                 if self._check_cancel(job):
                     self._store.remove(job.job_id)
@@ -152,44 +148,35 @@ class MonitorLoop:
             self._store.upsert(job)
 
     def _check_start(self, job: JobRecordConfig) -> bool:
-        condition = job.registration.start_condition
+        condition = job.definition.start_condition
         if condition is None:
             return True
         return self._evaluate_condition(job, condition, label="start").passed
 
     def _check_cancel(self, job: JobRecordConfig) -> bool:
-        condition = job.registration.cancel_condition
+        condition = job.definition.cancel_condition
         if condition is None:
             return False
         return self._evaluate_condition(job, condition, label="cancel").passed
 
     def _check_finish(self, job: JobRecordConfig) -> bool:
-        condition = job.registration.finish_condition
+        condition = job.definition.finish_condition
         if condition is None:
             return False
         return self._evaluate_condition(job, condition, label="finish").passed
 
     def _start_job(self, job: JobRecordConfig) -> None:
         runtime = job.runtime
-        registration = job.registration
         runtime.attempts += 1
         runtime.start_ts = time.time()
-        runtime_job_id = self._client.submit(
-            registration.name,
-            registration.command,
-            registration.log_path,
-            registration.extra_args,
-            registration.log_to_file,
-            registration.log_path_current,
-            registration.slurm,
-        )
+        runtime_job_id = self._client.submit(job.definition)
         runtime.runtime_job_id = runtime_job_id
         runtime.submitted = True
         runtime.log_cursor = 0
 
     def _process_log_events(self, job: JobRecordConfig) -> bool:
         runtime = job.runtime
-        registration = job.registration
+        definition = job.definition
         log_path = self._resolve_log_path(job)
         if not log_path.exists():
             return True
@@ -204,7 +191,7 @@ class MonitorLoop:
         if not new_text:
             return True
 
-        for idx, rule in enumerate(self._coerce_log_events(registration.log_events)):
+        for idx, rule in enumerate(self._coerce_log_events(definition.log_events)):
             if rule.action is None:
                 continue
             for match in self._iter_matches(rule, new_text):
@@ -219,7 +206,7 @@ class MonitorLoop:
                     payload=metadata,
                     metadata={
                         "job_id": job.job_id,
-                        "job_name": registration.name,
+                        "job_name": definition.name,
                         "last_action_ts": float(action_state.get("last_action_ts", 0.0)),
                     },
                 )
@@ -233,6 +220,10 @@ class MonitorLoop:
                     if effect == "restart":
                         return True
         return True
+
+    def _status_action(self, job: JobRecordConfig, old_status: str, new_status: str):
+        for state_event in job.definition.state_events:
+            state_event = StateEvent(state_event)
 
     def _action_context(self, event: EventRecord, job: JobRecordConfig):
         from monitor.actions import ActionContext
@@ -291,7 +282,7 @@ class MonitorLoop:
         return _apply_persistence(condition_cfg, state, result)
 
     def _build_job_metadata(self, job: JobRecordConfig) -> dict[str, Any]:
-        registration = job.registration
+        registration = job.definition
         metadata = dict(registration.metadata)
         metadata.setdefault("job_id", job.job_id)
         metadata.setdefault("job_name", registration.name)
@@ -302,13 +293,19 @@ class MonitorLoop:
         return metadata
 
     def _resolve_log_path(self, job: JobRecordConfig) -> Path:
-        registration = job.registration
+        definition = job.definition
+        job_id = job.runtime.runtime_job_id or job.job_id
         runtime = job.runtime
-        if registration.log_path_current:
-            return Path(registration.log_path_current)
+        if "_" in job_id:
+            array_index = int(job_id.split("_")[-1])
+        else:
+            array_index = 0
+        if definition.log_path_current:
+            log_path_cur = definition.log_path_current.replace("%a", str(array_index))
+            return Path(log_path_cur)
         timestamp = int(runtime.start_ts or time.time())
         return resolve_log_path(
-            registration.log_path,
+            definition.log_path,
             job_id=runtime.runtime_job_id or job.job_id,
             timestamp=timestamp,
         )
@@ -372,7 +369,6 @@ class MonitorLoop:
         if runtime.runtime_job_id:
             self._client.cancel(runtime.runtime_job_id)
             self._client.remove(runtime.runtime_job_id)
-        _apply_adjustments(job.registration, adjustments)
         runtime.submitted = False
         runtime.runtime_job_id = None
         runtime.log_cursor = 0
@@ -380,19 +376,6 @@ class MonitorLoop:
         runtime.action_state = {}
         runtime.start_ts = None
         self._start_job(job)
-
-    def _duplicate_job(self, job: JobRecordConfig, payload: dict[str, Any]) -> None:
-        name_suffix = str(payload.get("name_suffix", "_dup"))
-        adjustments = payload.get("adjustments", {})
-        registration = _clone_registration(job.registration)
-        registration.name = f"{registration.name}{name_suffix}"
-        if "log_path" not in adjustments:
-            registration.log_path = _suffix_path(registration.log_path, name_suffix)
-        if registration.log_path_current and "log_path_current" not in adjustments:
-            registration.log_path_current = _suffix_path(registration.log_path_current, name_suffix)
-        _apply_adjustments(registration, adjustments)
-        job_id = _unique_job_id(self._store, f"{job.job_id}{name_suffix}")
-        self._store.upsert(JobRecordConfig(job_id=job_id, registration=registration))
 
     def _finalize_job(self, job: JobRecordConfig, *, cancel: bool) -> None:
         runtime = job.runtime
@@ -421,30 +404,9 @@ def _apply_persistence(
     return result
 
 
-def _apply_adjustments(registration, adjustments: dict[str, Any]) -> None:
-    if not adjustments:
-        return
-    if "command" in adjustments:
-        registration.command = list(adjustments["command"])
-    if "log_path" in adjustments:
-        registration.log_path = adjustments["log_path"]
-    if "log_path_current" in adjustments:
-        registration.log_path_current = adjustments["log_path_current"]
-    if "extra_args" in adjustments:
-        registration.extra_args = list(adjustments["extra_args"])
-    if "extra_args_append" in adjustments:
-        registration.extra_args = list(registration.extra_args) + list(adjustments["extra_args_append"])
-    if "metadata" in adjustments:
-        registration.metadata.update(dict(adjustments["metadata"]))
-    if "log_to_file" in adjustments:
-        registration.log_to_file = bool(adjustments["log_to_file"])
-    if "slurm" in adjustments:
-        registration.slurm = adjustments["slurm"]
-
-
 def _clone_registration(registration):
     payload = asdict(registration)
-    return parse_config(JobRegistrationInterface.cfgtype, payload)
+    return parse_config(JobInterface.cfgtype, payload)
 
 
 def _suffix_path(path: str, suffix: str) -> str:
@@ -463,6 +425,7 @@ def _unique_job_id(store: JobFileStore, base_id: str) -> str:
         job_id = f"{base_id}-{counter}"
         counter += 1
     return job_id
+
 
 def _extract_groups(match: re.Match[str], rule: LogEventConfig) -> dict[str, Any]:
     extracted: dict[str, Any] = {}

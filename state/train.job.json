@@ -2,7 +2,7 @@
   "class_name": "JobRecord",
   "job_id": "train",
   "registration": {
-    "class_name": "SlurmJobRegistration",
+    "class_name": "SlurmJob",
     "name": "train",
     "command": [
       "python",

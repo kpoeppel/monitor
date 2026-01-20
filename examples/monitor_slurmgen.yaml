@@ -16,7 +16,7 @@ client:
 jobs:
   - job_id: train
     registration:
-      class_name: SlurmJobRegistration
+      class_name: SlurmJob
       name: train
       command: ["python", "train.py"]
       log_path: "./slurm_out/logs/train_%j.log"

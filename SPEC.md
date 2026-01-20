@@ -21,7 +21,7 @@
   - `registration`: static job definition.
   - `runtime`: attempts, job id, cursor, action condition state, etc.
 
-### JobRegistrationConfig (`src/monitor/submission.py`)
+### JobConfig (`src/monitor/submission.py`)
 - Per-job configuration:
   - `name`, `command`, `log_path`, `log_path_current`
   - `log_events` (list of `LogEventConfig`)
@@ -56,7 +56,7 @@
 ```yaml
 job_id: "job1"
 registration:
-  class_name: LocalJobRegistration
+  class_name: LocalJob
   name: job1
   command: ["bash", "./job1.sh"]
   log_path: "./logs/job1_%t.log"

@@ -18,7 +18,7 @@ from monitor import LocalCommandClient
 from monitor.actions import LogActionConfig, DuplicateActionConfig, LocalActionBackendConfig
 from monitor.actions import LogEventConfig
 from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop
-from monitor.submission import LocalJobRegistrationConfig
+from monitor.submission import LocalJobConfig
 
 
 def main():
@@ -63,7 +63,7 @@ echo "Training completed successfully"
     store.upsert(
         JobRecordConfig(
             job_id=job_id,
-            registration=LocalJobRegistrationConfig(
+            registration=LocalJobConfig(
                 name="local-training",
                 command=["bash", str(script_path)],
                 log_path=log_path,

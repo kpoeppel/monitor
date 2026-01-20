@@ -4,8 +4,9 @@ from pathlib import Path
 
 from compoconf import parse_config
 
-import monitor.slurm_job_client  # noqa: F401
+import monitor.slurm_client  # noqa: F401
 from monitor.job_client_protocol import JobClientInterface
+from monitor.submission import SlurmJobConfig
 
 
 def test_slurm_job_client_submit_with_fake_client(tmp_path: Path) -> None:
@@ -17,21 +18,26 @@ def test_slurm_job_client_submit_with_fake_client(tmp_path: Path) -> None:
     client_config = parse_config(
         JobClientInterface.cfgtype,
         {
-            "class_name": "SlurmJobClient",
+            "class_name": "SlurmClient",
+            "base_client": {"class_name": "FakeSlurmClient"},
+        },
+    )
+    job_config = parse_config(
+        SlurmJobConfig,
+        {
             "slurm": {
                 "template_path": str(template_path),
                 "script_dir": str(tmp_path / "scripts"),
                 "log_dir": str(tmp_path / "logs"),
+                "command": ["echo", "Hello"],
+                "name": "test",
             },
-            "slurm_client": {"class_name": "FakeSlurmClient"},
+            "log_path": str(tmp_path / "logs" / "test.log"),
+            "name": "test",
         },
     )
     client = client_config.instantiate(JobClientInterface)
-    job_id = client.submit(
-        name="job",
-        command=["echo", "hi"],
-        log_path=str(tmp_path / "logs" / "job_%j.log"),
-    )
+    job_id = client.submit(job_config)
     assert job_id == "1"
     statuses = client.squeue()
     assert statuses[job_id] == "PENDING"

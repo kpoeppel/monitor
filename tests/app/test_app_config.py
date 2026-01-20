@@ -13,7 +13,7 @@ def test_build_loop_syncs_jobs(tmp_path) -> None:
             {
                 "job_id": "job1",
                 "registration": {
-                    "class_name": "LocalJobRegistration",
+                    "class_name": "LocalJob",
                     "name": "job1",
                     "command": ["echo", "hi"],
                     "log_path": str(tmp_path / "job1_%j.log"),

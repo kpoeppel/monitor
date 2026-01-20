@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from monitor.loop import JobFileStore, JobRecordConfig
-from monitor.submission import LocalJobRegistrationConfig
+from monitor.submission import LocalJobConfig
 
 
 def test_monitor_control_submit_and_cancel(tmp_path: Path) -> None:
@@ -15,7 +15,7 @@ def test_monitor_control_submit_and_cancel(tmp_path: Path) -> None:
         "class_name": "JobRecord",
         "job_id": "job1",
         "registration": {
-            "class_name": "LocalJobRegistration",
+            "class_name": "LocalJob",
             "name": "job1",
             "command": ["echo", "hi"],
             "log_path": str(tmp_path / "job1_%j.log"),
@@ -44,7 +44,7 @@ def test_monitor_status_json(tmp_path: Path) -> None:
     store.upsert(
         JobRecordConfig(
             job_id="job2",
-            registration=LocalJobRegistrationConfig(
+            registration=LocalJobConfig(
                 name="job2",
                 command=["echo", "ok"],
                 log_path=str(tmp_path / "job2_%j.log"),
@@ -68,7 +68,7 @@ def test_monitor_cleanup_done_only(tmp_path: Path) -> None:
     store = JobFileStore(state_dir)
     record = JobRecordConfig(
         job_id="job3",
-        registration=LocalJobRegistrationConfig(
+        registration=LocalJobConfig(
             name="job3",
             command=["echo", "ok"],
             log_path=str(tmp_path / "job3_%j.log"),

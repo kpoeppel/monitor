@@ -13,25 +13,28 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Literal
+import logging
 
 from compoconf import ConfigInterface, register
 
-from monitor.job_client_protocol import JobClientInterface, JobClientProtocol
+from monitor.job_client_protocol import JobClientInterface
 from monitor.utils.paths import resolve_log_path, update_log_symlink
+from monitor.submission import LocalJobConfig
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
-class LocalJob:
+class LocalJobState:
     """Metadata for a locally executed job."""
 
     job_id: str
-    name: str
-    command: list[str]
-    log_path: str
+    definition: LocalJobConfig
     process: subprocess.Popen | None = None
-    state: str = "PENDING"
     return_code: int | None = None
+    state: Literal["RUNNING", "CANCELLED", "FAILED", "COMPLETED", "PENDING"] = "PENDING"
     submitted_at: float = field(default_factory=time.time)
 
 
@@ -64,18 +67,12 @@ class LocalCommandClient(JobClientInterface):
 
     def __init__(self, config: LocalCommandClientConfig | None = None) -> None:
         self.config = config or LocalCommandClientConfig()
-        self._jobs: dict[str, LocalJob] = {}
+        self._jobs: dict[str, LocalJobState] = {}
         self._job_counter = 0
 
     def submit(
         self,
-        name: str,
-        command: list[str],
-        log_path: str,
-        extra_args: list[str] | None = None,
-        log_to_file: bool | None = None,
-        log_path_current: str | None = None,
-        slurm: dict[str, Any] | None = None,
+        job: LocalJobConfig,
     ) -> str:
         """Submit a local script as a background process.
 
@@ -96,29 +93,27 @@ class LocalCommandClient(JobClientInterface):
 
         log_file = None
         stdout_target = subprocess.DEVNULL
-        if log_to_file is None or log_to_file:
+        if job.log_to_file:
             timestamp = int(time.time())
-            resolved_log_path = resolve_log_path(log_path, job_id=job_id, timestamp=timestamp)
+            resolved_log_path = resolve_log_path(job.log_path, job_id=job_id, timestamp=timestamp)
             log_path_obj = Path(resolved_log_path)
             log_path_obj.parent.mkdir(parents=True, exist_ok=True)
             log_file = open(log_path_obj, "w")
             stdout_target = log_file
-            if log_path_current:
-                update_log_symlink(log_path_obj, Path(log_path_current))
+            if job.log_path_current:
+                update_log_symlink(log_path_obj, Path(job.log_path_current))
         try:
             proc = subprocess.Popen(
-                [*command, *(extra_args or [])],
+                [*job.command, *(job.extra_args or [])],
                 stdout=stdout_target,
                 stderr=subprocess.STDOUT if log_file else subprocess.DEVNULL,
                 start_new_session=True,  # Detach from terminal
-                cwd=self._command_cwd(command),  # Run in command's directory if possible
+                cwd=self._command_cwd(job.command),  # Run in command's directory if possible
             )
 
-            job = LocalJob(
+            job = LocalJobState(
                 job_id=job_id,
-                name=name,
-                command=list(command),
-                log_path=str(log_path_obj) if log_to_file is None or log_to_file else log_path,
+                definition=job,
                 process=proc,
                 state="RUNNING",
             )
@@ -136,15 +131,8 @@ class LocalCommandClient(JobClientInterface):
 
     def submit_array(
         self,
-        array_name: str,
-        command: list[str],
-        log_paths: list[str],
-        task_names: list[str],
-        extra_args: list[str] | None = None,
-        start_index: int | None = None,
-        log_to_file: bool | None = None,
-        log_path_current: str | None = None,
-        slurm: dict[str, Any] | None = None,
+        job: LocalJobConfig,
+        indices: list[int],
     ) -> list[str]:
         """Submit multiple instances of a script.
 
@@ -155,54 +143,52 @@ class LocalCommandClient(JobClientInterface):
             array_name: Base name for the job array
             command: Command to execute for each task
             log_paths: Log paths, one per task
-            task_names: Task names, one per task
 
         Returns:
             List of job_ids for submitted tasks
         """
         job_ids = []
 
-        for task_idx, (log_path, task_name) in enumerate(zip(log_paths, task_names)):
-            job_id = str(self._job_counter)
+        for task_idx in indices:
+            if task_idx > len(job.array_args):
+                LOGGER.warning(f"Failed to submit array index {task_idx} for job {job}")
+            job_id = str(self._job_counter) + f"_{task_idx}"
             self._job_counter += 1
 
             # Set environment variables for the task
             env = {
                 **subprocess.os.environ,
                 "TASK_ID": str(task_idx),
-                "TASK_NAME": task_name,
             }
 
             log_file = None
             stdout_target = subprocess.DEVNULL
-            if log_to_file is None or log_to_file:
+            if job.log_to_file is None or job.log_to_file:
                 timestamp = int(time.time())
-                resolved_log_path = resolve_log_path(log_path, job_id=job_id, timestamp=timestamp)
+                resolved_log_path = resolve_log_path(job.log_path, job_id=job_id, timestamp=timestamp)
                 log_path_obj = Path(resolved_log_path)
                 log_path_obj.parent.mkdir(parents=True, exist_ok=True)
                 log_file = open(log_path_obj, "w")
                 stdout_target = log_file
-                if log_path_current:
-                    update_log_symlink(log_path_obj, Path(log_path_current))
+                if job.log_path_current:
+                    update_log_symlink(log_path_obj, Path(job.log_path_current.replace("%a", str(task_idx))))
             try:
                 proc = subprocess.Popen(
-                    [*command, *(extra_args or [])],
+                    [*job.command, *(job.extra_args or []), *job.array_args[task_idx]],
                     stdout=stdout_target,
                     stderr=subprocess.STDOUT if log_file else subprocess.DEVNULL,
                     start_new_session=True,
                     env=env,
-                    cwd=self._command_cwd(command),
+                    cwd=self._command_cwd(job.command),
                 )
 
-                job = LocalJob(
+                job_state = LocalJobState(
                     job_id=job_id,
-                    name=f"{array_name}_{task_name}",
-                    command=list(command),
-                    log_path=str(log_path_obj) if log_to_file is None or log_to_file else log_path,
+                    definition=job,
                     process=proc,
                     state="RUNNING",
                 )
-                self._jobs[job_id] = job
+                self._jobs[job_id] = job_state
                 job_ids.append(job_id)
 
             except Exception:
@@ -294,4 +280,4 @@ class LocalCommandClient(JobClientInterface):
             self.remove(job_id)
 
 
-__all__ = ["LocalCommandClient", "LocalJob"]
+__all__ = ["LocalCommandClient", "LocalJobState"]

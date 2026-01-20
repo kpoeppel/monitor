@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Protocol, runtime_checkable
 
 from compoconf import RegistrableConfigInterface, register_interface
+from monitor.submission import BaseJob
 
 
 @register_interface
@@ -28,13 +29,7 @@ class JobClientProtocol(Protocol):
 
     def submit(
         self,
-        name: str,
-        command: list[str],
-        log_path: str,
-        extra_args: list[str] | None = None,
-        log_to_file: bool | None = None,
-        log_path_current: str | None = None,
-        slurm: dict[str, Any] | None = None,
+        job: BaseJob,
     ) -> str:  # pragma: no cover
         """Submit a single job.
 
@@ -55,15 +50,8 @@ class JobClientProtocol(Protocol):
 
     def submit_array(
         self,
-        array_name: str,
-        command: list[str],
-        log_paths: list[str],
-        task_names: list[str],
-        extra_args: list[str] | None = None,
-        start_index: int | None = None,
-        log_to_file: bool | None = None,
-        log_path_current: str | None = None,
-        slurm: dict[str, Any] | None = None,
+        job: BaseJob,
+        indices: list[int],
     ) -> list[str]:  # pragma: no cover
         """Submit an array of jobs (multiple instances of same script).
 

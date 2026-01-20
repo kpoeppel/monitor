@@ -26,6 +26,7 @@ from monitor.utils.template import replace_braced_keys
 
 LOGGER = logging.getLogger(__name__)
 
+
 @dataclass
 class ConditionResult:
     passed: bool
@@ -34,6 +35,7 @@ class ConditionResult:
 
     def __bool__(self) -> bool:  # pragma: no cover - convenience
         return self.passed
+
 
 @register_interface
 class MonitorConditionInterface(RegistrableConfigInterface):
@@ -54,16 +56,16 @@ class ConditionContext:
         merged: dict[str, Any] = {}
         merged.update(self.job_metadata)
         if self.event:
-            merged.update(self.event.metadata) # pragma: no cover
-            merged.update(self.event.payload) # pragma: no cover
-            merged.setdefault("event_id", self.event.event_id) # pragma: no cover
-            merged.setdefault("event_name", self.event.name) # pragma: no cover
+            merged.update(self.event.metadata)  # pragma: no cover
+            merged.update(self.event.payload)  # pragma: no cover
+            merged.setdefault("event_id", self.event.event_id)  # pragma: no cover
+            merged.setdefault("event_name", self.event.name)  # pragma: no cover
         return merged
 
     def render(self, template: str) -> str:
         try:
             return replace_braced_keys(template, self.variables)
-        except KeyError: # pragma: no cover
+        except KeyError:  # pragma: no cover
             return template
 
 
@@ -217,7 +219,7 @@ class FileContentCondition(BaseCondition):
     def check(self, context: ConditionContext) -> ConditionResult:
         rendered_path = context.render(self.config.path)
         path = Path(rendered_path).expanduser()
-        
+
         if not path.exists():
             return ConditionResult(passed=False, message=f"file {path} missing")
         try:
@@ -247,7 +249,7 @@ class CommandCondition(BaseCondition):
 
     def check(self, context: ConditionContext) -> ConditionResult:
         if not self.config.command:
-            return ConditionResult(passed=False, message="no command supplied") # pragma: no cover
+            return ConditionResult(passed=False, message="no command supplied")  # pragma: no cover
         rendered = [context.render(segment) for segment in self.config.command]
         proc = subprocess.run(rendered, capture_output=True, text=True)
         if proc.returncode == 0:
@@ -312,13 +314,13 @@ class CompositeCondition(BaseCondition):
             if all(result.passed for result in results):
                 return ConditionResult(passed=True)
             failed = next((r for r in results if not r.passed), None)
-            return failed or ConditionResult(passed=False, message="unknown composite failure") # pragma: no cover
+            return failed or ConditionResult(passed=False, message="unknown composite failure")  # pragma: no cover
 
         # mode == "any"
         if any(result.passed for result in results):
             return ConditionResult(passed=True)
         failed = next((r for r in results if not r.passed), None)
-        return failed or ConditionResult(passed=False, message="all child conditions failed") # pragma: no cover
+        return failed or ConditionResult(passed=False, message="all child conditions failed")  # pragma: no cover
 
 
 @dataclass
@@ -401,7 +403,7 @@ class MetadataCondition(BaseCondition):
 
     def check(self, context: ConditionContext) -> ConditionResult:
         if not self.config.key:
-            return ConditionResult(passed=False, message="metadata key missing") # pragma: no cover
+            return ConditionResult(passed=False, message="metadata key missing")  # pragma: no cover
         value = context.event.metadata.get(self.config.key)
         if value is None:
             return ConditionResult(passed=False, message=f"metadata key '{self.config.key}' not present")

@@ -7,7 +7,7 @@ state_store_dir: "./state"
 jobs:
   - job_id: job1
     registration:
-      class_name: LocalJobRegistration
+      class_name: LocalJob
       name: job1
       command: ["bash", "./job1.sh"]
       log_path: "job1_%j.log"
@@ -42,7 +42,7 @@ jobs:
               class_name: LocalActionBackend
   - job_id: job2
     registration:
-      class_name: LocalJobRegistration
+      class_name: LocalJob
       name: job2
       command: ["bash", "./job2.sh"]
       log_path: "job2_%j.log"

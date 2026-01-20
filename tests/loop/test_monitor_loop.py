@@ -16,7 +16,7 @@ from monitor.actions import (
 from monitor.conditions import AlwaysTrueConditionConfig, FileExistsConditionConfig, CooldownConditionConfig
 from monitor.conditions import TimeoutConditionConfig, CompositeConditionConfig
 from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop
-from monitor.submission import LocalJobRegistrationConfig
+from monitor.submission import LocalJobConfig
 
 
 class FakeClient:
@@ -84,7 +84,7 @@ def test_monitor_loop_start_condition(tmp_path: Path) -> None:
     gate = tmp_path / "ready.flag"
     record = JobRecordConfig(
         job_id="job1",
-        registration=LocalJobRegistrationConfig(
+        registration=LocalJobConfig(
             name="job1",
             command=["echo", "hi"],
             log_path=str(tmp_path / "job1_%j.log"),
@@ -113,7 +113,7 @@ def test_monitor_loop_cancel_condition(tmp_path: Path) -> None:
 
     record = JobRecordConfig(
         job_id="job2",
-        registration=LocalJobRegistrationConfig(
+        registration=LocalJobConfig(
             name="job2",
             command=["echo", "bye"],
             log_path=str(tmp_path / "job2_%j.log"),
@@ -138,7 +138,7 @@ def test_monitor_loop_restart_action(tmp_path: Path) -> None:
 
     record = JobRecordConfig(
         job_id="job3",
-        registration=LocalJobRegistrationConfig(
+        registration=LocalJobConfig(
             name="job3",
             command=["echo", "run"],
             log_path=str(tmp_path / "job3_%j.log"),
@@ -182,7 +182,7 @@ def test_monitor_loop_duplicate_action(tmp_path: Path) -> None:
     log_current = tmp_path / "job4_latest.log"
     record = JobRecordConfig(
         job_id="job4",
-        registration=LocalJobRegistrationConfig(
+        registration=LocalJobConfig(
             name="job4",
             command=["echo", "dup"],
             log_path=str(tmp_path / "job4_%j.log"),
@@ -222,7 +222,7 @@ def test_monitor_loop_finish_condition(tmp_path: Path) -> None:
     finished = tmp_path / "done.txt"
     record = JobRecordConfig(
         job_id="job5",
-        registration=LocalJobRegistrationConfig(
+        registration=LocalJobConfig(
             name="job5",
             command=["echo", "done"],
             log_path=str(tmp_path / "job5_%j.log"),
@@ -251,7 +251,7 @@ def test_monitor_loop_cancel_action(tmp_path: Path) -> None:
     log_current = tmp_path / "job6_latest.log"
     record = JobRecordConfig(
         job_id="job6",
-        registration=LocalJobRegistrationConfig(
+        registration=LocalJobConfig(
             name="job6",
             command=["echo", "cancel"],
             log_path=str(tmp_path / "job6_%j.log"),
@@ -289,7 +289,7 @@ def test_monitor_loop_log_path_current_used(tmp_path: Path) -> None:
     log_current = tmp_path / "job7_latest.log"
     record = JobRecordConfig(
         job_id="job7",
-        registration=LocalJobRegistrationConfig(
+        registration=LocalJobConfig(
             name="job7",
             command=["echo", "finish"],
             log_path=str(tmp_path / "job7_%j.log"),
@@ -324,7 +324,7 @@ def test_monitor_loop_action_conditions(tmp_path: Path, monkeypatch) -> None:
     log_current = tmp_path / "job8_latest.log"
     record = JobRecordConfig(
         job_id="job8",
-        registration=LocalJobRegistrationConfig(
+        registration=LocalJobConfig(
             name="job8",
             command=["echo", "cond"],
             log_path=str(tmp_path / "job8_%j.log"),
@@ -366,7 +366,7 @@ def test_monitor_loop_persistent_fail(tmp_path: Path) -> None:
     log_current = tmp_path / "job9_latest.log"
     record = JobRecordConfig(
         job_id="job9",
-        registration=LocalJobRegistrationConfig(
+        registration=LocalJobConfig(
             name="job9",
             command=["echo", "cond"],
             log_path=str(tmp_path / "job9_%j.log"),
@@ -402,7 +402,7 @@ def test_monitor_loop_composite_condition(tmp_path: Path) -> None:
     gate = tmp_path / "ready.flag"
     record = JobRecordConfig(
         job_id="job10",
-        registration=LocalJobRegistrationConfig(
+        registration=LocalJobConfig(
             name="job10",
             command=["echo", "go"],
             log_path=str(tmp_path / "job10_%j.log"),
