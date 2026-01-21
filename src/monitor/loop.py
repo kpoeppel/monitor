@@ -107,7 +107,7 @@ class JobFileStore:
         if path.exists():
             path.unlink()
 
-    def load(self, job_id: str) -> JobRecordConfig | None:
+    def load(self, job_id: str, include_finished=False) -> JobRecordConfig | None:
         path = self.path_for(job_id)
         if not path.exists():
             return None
@@ -117,6 +117,8 @@ class JobFileStore:
             job = parse_config(JobRecordConfig, payload)
             # Parse nested event configs once
             _normalize_job_definition(job)
+            if not include_finished and job.runtime.final_state is not None:
+                return None
             return job
         except (OSError, json.JSONDecodeError, ValueError, KeyError):
             return None
