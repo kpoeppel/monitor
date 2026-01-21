@@ -8,18 +8,17 @@ so a single monitor loop can be restarted safely.
 
 - **MonitorLoop**: Synchronous loop that loads job files, evaluates conditions,
   submits/cancels jobs, and executes actions inline.
-- **JobFileStore**: One `.job.json` file per job registration inside a state dir.
-- **JobConfig**: Per-job config (command, log paths, conditions, log events).
+- **JobFileStore**: One `.job.json` file per job record inside a state dir.
+- **JobRecordConfig**: Per-job record with a `definition` (job config) and runtime state.
 - **LogEventConfig**: Log pattern + action + action conditions.
-- **Actions**: `LogAction`, `RunCommandAction`, `RestartAction`, `DuplicateAction`,
-  `CancelAction`, `FinishAction`.
-- **Clients**: `LocalCommandClient` for local execution, `SlurmJobClient` for SLURM
+- **Actions**: `LogAction`, `NewJobAction`, `RestartAction`, `CancelAction`, `FinishAction`.
+- **Clients**: `LocalCommandClient` for local execution, `SlurmClient` for SLURM
   with external `slurm_gen` script rendering and submission clients.
 
 ## Features
 
 - Per-job log pattern matching with inline actions.
-- Restart/duplicate actions with explicit adjustments.
+- Restart/cancel/finish actions triggered from log events.
 - Start/cancel/finish conditions on each job.
 - Persistent condition states (e.g., latch once a file appears).
 - Resume from a state directory (one job file per job).
@@ -28,19 +27,19 @@ so a single monitor loop can be restarted safely.
 
 ```python
 from monitor import LocalCommandClient
-from monitor.actions import LogActionConfig, RestartActionConfig, LocalActionBackendConfig
+from monitor.actions import LogActionConfig, RestartActionConfig
 from monitor.actions import LogEventConfig
 from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop
 from monitor.submission import LocalJobConfig
 
 store = JobFileStore("./state")
 client = LocalCommandClient()
-loop = MonitorLoop(store, client, poll_interval_seconds=2)
+loop = MonitorLoop(store, local_client=client, poll_interval_seconds=2)
 
 store.upsert(
     JobRecordConfig(
         job_id="train-1",
-        registration=LocalJobConfig(
+        definition=LocalJobConfig(
             name="train-1",
             command=["bash", "./train.sh"],
             log_path="./train_%t.log",
@@ -51,8 +50,6 @@ store.upsert(
                     pattern="CUDA out of memory",
                     action=RestartActionConfig(
                         reason="oom",
-                        extra_args_append=["--retry={attempts}"],
-                        backend_config=LocalActionBackendConfig(),
                     ),
                 ),
                 LogEventConfig(
@@ -97,16 +94,12 @@ jobs:
           action:
             class_name: RestartAction
             reason: "oom"
-            backend_config:
-              class_name: LocalActionBackend
         - class_name: LogEvent
           name: duplicate
           pattern: "DUPLICATE_JOB"
           action:
-            class_name: DuplicateAction
-            name_suffix: "-copy"
-            backend_config:
-              class_name: LocalActionBackend
+            class_name: LogAction
+            message: "duplicate requested"
 ```
 
 Run:
@@ -114,6 +107,10 @@ Run:
 ```bash
 python scripts/run_monitor.py --config examples/monitor_app.yaml
 ```
+
+Note: app configs define job templates, but they are not automatically inserted
+into the state store. Use `monitor_control.py` (below) or create job records
+yourself to enqueue work.
 
 ## Control/Status Utilities
 
@@ -150,6 +147,7 @@ Cleanup is covered by `tests/scripts/test_monitor_scripts.py` (invokes `monitor_
 
 - `log_path` can include `%j` (job id) or `%t` (submission timestamp).
 - `log_path_current` is a stable path (symlink) updated on submission.
+- For arrays, `%A` is the array job id and `%a` is the task index.
 
 Note: For SLURM jobs that use `slurm_gen`, the job-level `slurm` block must include
 `template_path`, `script_dir`, and `log_dir` because it is parsed as a full `SlurmConfig`.
@@ -163,21 +161,64 @@ Conditions return boolean `passed` only; no blocking/wait states. Use:
 
 ## SLURM (slurm_gen)
 
-Use `SlurmJobClient` to render scripts and submit through SLURM:
+Use `SlurmClient` to render scripts and submit through SLURM:
 
 ```yaml
-client:
-  class_name: SlurmJobClient
-  output_dir: "./slurm_out"
-  slurm:
-    template_path: "./templates/job.sbatch"
-    script_dir: "./slurm_out/scripts"
-    log_dir: "./slurm_out/logs"
-    command: ["python", "train.py", "--profile=fast"]
-    sbatch:
-      gres: "gpu:1"
-  slurm_client:
+slurm_client:
+  class_name: SlurmClient
+  base_client:
     class_name: SlurmClient
 ```
 
+`base_client` refers to the slurm_gen client implementation (e.g., `SlurmClient`
+or `FakeSlurmClient`).
+
 Ensure `slurm_gen` is installed (or on `PYTHONPATH`) for SLURM usage.
+
+## Array Jobs
+
+Array jobs are supported at the client layer. When a job definition has
+`array_len > 1` (or `array_args` for local jobs), MonitorLoop will submit an
+array and split it into per-task job records with `job_id` suffixes like
+`job1_0`, `job1_1`, etc.
+
+Local arrays (per-task args and %a in log paths):
+
+```python
+from monitor import LocalCommandClient
+from monitor.submission import LocalJobConfig
+
+client = LocalCommandClient()
+job_ids = client.submit_array(
+    LocalJobConfig(
+        name="train-array",
+        command=["bash", "./train.sh"],
+        log_path="./logs/train_%t_%a.log",
+        log_path_current="./logs/train_latest_%a.log",
+        array_args=[["--shard=0"], ["--shard=1"]],
+    ),
+    indices=[0, 1],
+)
+```
+
+SLURM arrays (manual submission via slurm_gen):
+
+```python
+from monitor.slurm_client import SlurmClient
+from slurm_gen import SlurmConfig
+
+client = SlurmClient()
+job_ids = client.submit_array(
+    SlurmConfig(
+        template_path="./templates/job.sbatch",
+        script_dir="./slurm_out/scripts",
+        log_dir="./slurm_out/logs",
+        command=["python", "train.py"],
+        array=True,
+    ),
+    indices=[0, 1, 2],
+)
+```
+
+For array log paths, use `%A` (array job id) and `%a` (task index). When using
+`log_path_current`, include `%a` so each task gets its own stable symlink.

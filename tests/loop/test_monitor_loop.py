@@ -10,6 +10,7 @@ from monitor.actions import (
     RestartActionConfig,
     LogActionConfig,
     LogEventConfig,
+    StateEventConfig,
 )
 from monitor.conditions import AlwaysTrueConditionConfig, FileExistsConditionConfig, CooldownConditionConfig
 from monitor.conditions import TimeoutConditionConfig, CompositeConditionConfig
@@ -45,6 +46,23 @@ class FakeClient:
 
     def squeue(self) -> dict[str, str]:
         return dict(self._statuses)
+
+
+class FakeArrayClient(FakeClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.submit_array_calls: list[list[int]] = []
+
+    def submit_array(self, job, indices: list[int]) -> list[str]:
+        self.submit_array_calls.append(list(indices))
+        self._counter += 1
+        base_id = self._counter
+        job_ids = []
+        for idx in indices:
+            job_id = f"job-{base_id}_{idx}"
+            self._statuses[job_id] = "RUNNING"
+            job_ids.append(job_id)
+        return job_ids
 
 
 def _write_log(path: Path, text: str) -> None:
@@ -102,7 +120,7 @@ def test_monitor_loop_cancel_condition(tmp_path: Path) -> None:
     store.upsert(record)
 
     loop.observe_once()
-    loaded = store.load("job2")
+    loaded = store.load("job2", include_finished=True)
     assert loaded is not None
     assert loaded.runtime.final_state == "cancelled"
     assert client.cancel_calls == ["job-99"]
@@ -170,13 +188,13 @@ def test_monitor_loop_finish_condition(tmp_path: Path) -> None:
     store.upsert(record)
 
     loop.observe_once()
-    loaded = store.load("job5")
+    loaded = store.load("job5", include_finished=True)
     assert loaded is not None
     assert loaded.runtime.final_state is None
 
     finished.write_text("done", encoding="utf-8")
     loop.observe_once()
-    loaded = store.load("job5")
+    loaded = store.load("job5", include_finished=True)
     assert loaded is not None
     assert loaded.runtime.final_state == "finished"
     assert client.remove_calls == ["job-5"]
@@ -212,7 +230,7 @@ def test_monitor_loop_cancel_action(tmp_path: Path) -> None:
     _write_log(log_current, "CANCEL\n")
     loop.observe_once()
 
-    loaded = store.load("job6")
+    loaded = store.load("job6", include_finished=True)
     assert loaded is not None
     assert loaded.runtime.final_state == "cancelled"
     assert client.cancel_calls == ["job-6"]
@@ -248,7 +266,7 @@ def test_monitor_loop_log_path_current_used(tmp_path: Path) -> None:
 
     _write_log(log_current, "FINISH\n")
     loop.observe_once()
-    loaded = store.load("job7")
+    loaded = store.load("job7", include_finished=True)
     assert loaded is not None
     assert loaded.runtime.final_state == "finished"
 
@@ -384,7 +402,183 @@ def test_monitor_loop_completed_status(tmp_path: Path) -> None:
     client._statuses["job-11"] = "COMPLETED"
     loop.observe_once()
 
-    loaded = store.load("job11")
+    loaded = store.load("job11", include_finished=True)
     assert loaded is not None
     assert loaded.runtime.final_state == "finished"
     assert loaded.runtime.last_status is None
+
+
+def test_monitor_loop_state_event_action(tmp_path: Path) -> None:
+    store = JobFileStore(tmp_path / "state")
+    client = FakeClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    record = JobRecordConfig(
+        job_id="job12",
+        definition=LocalJobConfig(
+            name="job12",
+            command=["echo", "done"],
+            log_path=str(tmp_path / "job12_%j.log"),
+                state_events=[
+                    StateEventConfig(
+                        name="running",
+                        transition=(None, "RUNNING"),
+                        action=LogActionConfig(message="done"),
+                    )
+                ],
+        ),
+    )
+    record.runtime.submitted = True
+    record.runtime.runtime_job_id = "job-12"
+    record.runtime.last_status = None
+    client._statuses["job-12"] = "RUNNING"
+    store.upsert(record)
+
+    loop.observe_once()
+
+    loaded = store.load("job12")
+    assert loaded is not None
+    action_state = loaded.runtime.action_state["state:running:0"]
+    assert action_state["last_status"] == "success"
+
+
+def test_monitor_loop_log_event_no_match_updates_cursor(tmp_path: Path) -> None:
+    store = JobFileStore(tmp_path / "state")
+    client = FakeClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    log_current = tmp_path / "job13_latest.log"
+    record = JobRecordConfig(
+        job_id="job13",
+        definition=LocalJobConfig(
+            name="job13",
+            command=["echo", "noop"],
+            log_path=str(tmp_path / "job13_%j.log"),
+            log_path_current=str(log_current),
+            log_events=[
+                LogEventConfig(
+                    name="hit",
+                    pattern="HIT",
+                    action=LogActionConfig(message="hit"),
+                )
+            ],
+        ),
+    )
+    record.runtime.submitted = True
+    record.runtime.runtime_job_id = "job-13"
+    client._statuses["job-13"] = "RUNNING"
+    store.upsert(record)
+
+    _write_log(log_current, "MISS\n")
+    loop.observe_once()
+
+    loaded = store.load("job13")
+    assert loaded is not None
+    assert loaded.runtime.log_cursor > 0
+    assert loaded.runtime.action_state == {}
+
+
+def test_monitor_loop_array_log_path_current_uses_index(tmp_path: Path) -> None:
+    store = JobFileStore(tmp_path / "state")
+    client = FakeClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    log_current = tmp_path / "job14_latest_%a.log"
+    record = JobRecordConfig(
+        job_id="job14_2",
+        definition=LocalJobConfig(
+            name="job14",
+            command=["echo", "array"],
+            log_path=str(tmp_path / "job14_%j.log"),
+            log_path_current=str(log_current),
+            log_events=[
+                LogEventConfig(
+                    name="hit",
+                    pattern="ARRAY",
+                    action=LogActionConfig(message="ok"),
+                )
+            ],
+        ),
+        array_idx=2,
+    )
+    record.runtime.submitted = True
+    record.runtime.runtime_job_id = "job-14_2"
+    client._statuses["job-14_2"] = "RUNNING"
+    store.upsert(record)
+
+    _write_log(tmp_path / "job14_latest_2.log", "ARRAY\n")
+    loop.observe_once()
+
+    loaded = store.load("job14_2")
+    assert loaded is not None
+    assert "log:hit:0" in loaded.runtime.action_state
+
+
+def test_monitor_loop_restart_array_task(tmp_path: Path) -> None:
+    store = JobFileStore(tmp_path / "state")
+    client = FakeArrayClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    log_current = tmp_path / "job15_latest_%a.log"
+    record = JobRecordConfig(
+        job_id="job15_2",
+        definition=LocalJobConfig(
+            name="job15",
+            command=["echo", "array"],
+            log_path=str(tmp_path / "job15_%j.log"),
+            log_path_current=str(log_current),
+            log_events=[
+                LogEventConfig(
+                    name="oom",
+                    pattern="OOM",
+                    action=RestartActionConfig(reason="oom"),
+                )
+            ],
+        ),
+        array_idx=2,
+    )
+    record.runtime.submitted = True
+    record.runtime.runtime_job_id = "job-15_2"
+    record.runtime.attempts = 1
+    client._statuses["job-15_2"] = "RUNNING"
+    store.upsert(record)
+
+    _write_log(tmp_path / "job15_latest_2.log", "OOM\n")
+    loop.observe_once()
+
+    loaded = store.load("job15_2")
+    assert loaded is not None
+    assert loaded.runtime.attempts == 2
+    assert loaded.runtime.runtime_job_id == "job-1_2"
+    assert client.submit_array_calls == [[2]]
+    assert client.cancel_calls == ["job-15_2"]
+    assert client.remove_calls == ["job-15_2"]
+
+
+def test_monitor_loop_start_array_job(tmp_path: Path) -> None:
+    store = JobFileStore(tmp_path / "state")
+    client = FakeArrayClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    record = JobRecordConfig(
+        job_id="jobA",
+        definition=LocalJobConfig(
+            name="jobA",
+            command=["echo", "array"],
+            log_path=str(tmp_path / "jobA_%j_%a.log"),
+            log_path_current=str(tmp_path / "jobA_latest_%a.log"),
+            array_args=[["--shard=0"], ["--shard=1"]],
+        ),
+    )
+    store.upsert(record)
+
+    loop.observe_once()
+
+    assert store.load("jobA") is None
+    job0 = store.load("jobA_0")
+    job1 = store.load("jobA_1")
+    assert job0 is not None
+    assert job1 is not None
+    assert job0.runtime.submitted is True
+    assert job1.runtime.submitted is True
+    assert client.submit_array_calls == [[0, 1]]

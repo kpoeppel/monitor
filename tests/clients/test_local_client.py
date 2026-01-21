@@ -85,7 +85,7 @@ def test_local_client_submit_array(tmp_path: Path) -> None:
     job_ids = client.submit_array(
         LocalJobConfig(
             name="arr",
-            command=["bash", "-c", "echo $TASK_ID $TASK_NAME"],
+            command=["bash", "-c", "echo task:$TASK_ID"],
             log_path=log_path,
             log_path_current=str(tmp_path / "arr1_cur_%a.log"),
             array_args=["0", "1"],
@@ -98,3 +98,10 @@ def test_local_client_submit_array(tmp_path: Path) -> None:
     assert all(statuses[job_id] == "COMPLETED" for job_id in job_ids)
     assert len(list(tmp_path.glob("arr1_var_*.log"))) == 2
     assert len(list(tmp_path.glob("arr1_cur_*.log"))) == 2
+    for idx in range(2):
+        symlink = tmp_path / f"arr1_cur_{idx}.log"
+        assert symlink.is_symlink()
+        target = symlink.resolve()
+        assert target.exists()
+        contents = target.read_text(encoding="utf-8")
+        assert f"task:{idx}" in contents

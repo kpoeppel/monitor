@@ -5,10 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, MISSING
 from pathlib import Path
 from typing import Any, Iterable
-import re
 
 from compoconf import ConfigInterface, parse_config
 
@@ -49,13 +48,14 @@ class JobRuntimeConfig:
     final_state: str | None = None  # "finished", "cancelled", or None for active jobs
 
 
-@dataclass
+@dataclass(kw_only=True)
 class JobRecordConfig:
     class_name: str = "JobRecord"
     job_id: str = ""
-    definition: JobInterface.cfgtype | None = None
+    definition: JobInterface.cfgtype = field(default_factory=MISSING)
     runtime: JobRuntimeConfig = field(default_factory=JobRuntimeConfig)
     schema_version: int = SCHEMA_VERSION
+    array_idx: int | None = None
 
 
 class JobFileStore:
@@ -178,8 +178,9 @@ class MonitorLoop:
                     self._store.mark_finished(job.job_id, "finished")
                     continue
                 if self._check_start(job):
-                    self._start_job(job)
-                self._store.upsert(job)
+                    self._start_jobs(job)
+                else:
+                    self._store.upsert(job)
                 continue
 
             if self._check_cancel(job):
@@ -249,10 +250,54 @@ class MonitorLoop:
         runtime.attempts += 1
         runtime.start_ts = time.time()
         client = self._get_client(job)
-        runtime_job_id = client.submit(job.definition)
+        if job.array_idx is not None:
+            job_ids = client.submit_array(job.definition, indices=[job.array_idx])
+            if not isinstance(job_ids, list):
+                runtime_job_id = job_ids
+            elif not job_ids:
+                raise ValueError("submit_array returned no job ids")
+            else:
+                runtime_job_id = job_ids[0]
+        else:
+            runtime_job_id = client.submit(job.definition)
         runtime.runtime_job_id = runtime_job_id
         runtime.submitted = True
         runtime.log_cursor = 0
+
+    def _start_jobs(self, job: JobRecordConfig, indices: list[int] | None = None) -> None:
+        definition = job.definition
+        if definition is None:
+            return
+        array_len = int(getattr(definition, "array_len", 1) or 1)
+        if array_len <= 1:
+            self._start_job(job)
+            self._store.upsert(job)
+            return
+
+        runtime = job.runtime
+        runtime.attempts += 1
+        runtime.start_ts = time.time()
+        client = self._get_client(job)
+        indices = indices or list(range(array_len))
+        job_ids = client.submit_array(definition, indices)
+
+        for idx, runtime_job_id in zip(indices, job_ids):
+            task_runtime = JobRuntimeConfig(
+                submitted=True,
+                attempts=runtime.attempts,
+                runtime_job_id=runtime_job_id,
+                start_ts=runtime.start_ts,
+                log_cursor=0,
+            )
+            task_record = JobRecordConfig(
+                job_id=f"{job.job_id}_{idx}",
+                definition=definition,
+                runtime=task_runtime,
+                array_idx=idx,
+            )
+            self._store.upsert(task_record)
+
+        self._store.remove(job.job_id)
 
     def _process_log_events(self, job: JobRecordConfig) -> str:
         """Process log events by checking patterns in new log content.
