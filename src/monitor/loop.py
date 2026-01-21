@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -12,10 +13,22 @@ import re
 from compoconf import ConfigInterface, parse_config
 
 from monitor.conditions import ConditionContext, ConditionResult, MonitorConditionInterface
-from monitor.actions import EventRecord, build_event_id, instantiate_action_binding, LogEventConfig
+from monitor.actions import (
+    EventRecord,
+    build_event_id,
+    LogEventConfig,
+    LogEvent,
+    StateEventConfig,
+    StateEvent,
+    ActionResult,
+    BaseMonitorAction,
+    NewJobActionConfig,
+)
 from monitor.job_client_protocol import JobClientProtocol
-from monitor.submission import JobInterface
+from monitor.submission import JobInterface, SlurmJobConfig, LocalJobConfig
 from monitor.utils.paths import resolve_log_path
+
+LOGGER = logging.getLogger(__name__)
 
 
 SCHEMA_VERSION = 1
@@ -28,10 +41,12 @@ class JobRuntimeConfig:
     attempts: int = 0
     runtime_job_id: str | None = None
     start_ts: float | None = None
+    end_ts: float | None = None
     log_cursor: int = 0
     condition_state: dict[str, Any] = field(default_factory=dict)
     action_state: dict[str, Any] = field(default_factory=dict)
     last_status: str | None = None
+    final_state: str | None = None  # "finished", "cancelled", or None for active jobs
 
 
 @dataclass
@@ -53,13 +68,20 @@ class JobFileStore:
     def list_paths(self) -> Iterable[Path]:
         return self.root.glob("*.job.json")
 
-    def load_all(self) -> list[JobRecordConfig]:
+    def load_all(self, *, include_finished: bool = False) -> list[JobRecordConfig]:
+        """Load job records, optionally excluding finished/cancelled jobs."""
         jobs: list[JobRecordConfig] = []
         for path in self.list_paths():
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 _import_registry()
-                jobs.append(parse_config(JobRecordConfig, payload))
+                job = parse_config(JobRecordConfig, payload)
+                # Parse nested event configs once
+                _normalize_job_definition(job)
+                # Skip jobs that are finished/cancelled unless requested
+                if not include_finished and job.runtime.final_state is not None:
+                    continue
+                jobs.append(job)
             except (OSError, json.JSONDecodeError, ValueError, KeyError):
                 continue
         return jobs
@@ -70,7 +92,17 @@ class JobFileStore:
         payload.setdefault("schema_version", SCHEMA_VERSION)
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+    def mark_finished(self, job_id: str, final_state: str) -> None:
+        """Mark a job as finished or cancelled without deleting it."""
+        job = self.load(job_id)
+        if job is None:
+            return
+        job.runtime.final_state = final_state
+        job.runtime.end_ts = time.time()
+        self.upsert(job)
+
     def remove(self, job_id: str) -> None:
+        """Actually delete a job file (use with caution - prefer mark_finished)."""
         path = self.path_for(job_id)
         if path.exists():
             path.unlink()
@@ -82,7 +114,10 @@ class JobFileStore:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             _import_registry()
-            return parse_config(JobRecordConfig, payload)
+            job = parse_config(JobRecordConfig, payload)
+            # Parse nested event configs once
+            _normalize_job_definition(job)
+            return job
         except (OSError, json.JSONDecodeError, ValueError, KeyError):
             return None
 
@@ -96,17 +131,35 @@ class MonitorLoop:
     def __init__(
         self,
         store: JobFileStore,
-        client: JobClientProtocol,
         *,
+        slurm_client: JobClientProtocol | None = None,
+        local_client: JobClientProtocol | None = None,
         poll_interval_seconds: float = 60.0,
     ) -> None:
         _import_registry()
         self._store = store
-        self._client = client
+        self._slurm_client = slurm_client
+        self._local_client = local_client
         self.poll_interval_seconds = poll_interval_seconds
 
+    def _get_client(self, job: JobRecordConfig) -> JobClientProtocol:
+        """Get the appropriate client based on job configuration."""
+        if job.definition is None:
+            raise ValueError("Job definition is None")
+
+        if isinstance(job.definition, SlurmJobConfig):
+            return self._slurm_client
+        elif isinstance(job.definition, LocalJobConfig):
+            return self._local_client
+
     def observe_once(self) -> None:
-        statuses = self._client.squeue()
+        # Query both clients and merge statuses
+        statuses: dict[str, str] = {}
+        if self._slurm_client:
+            statuses.update(self._slurm_client.squeue())
+        if self._local_client:
+            statuses.update(self._local_client.squeue())
+
         for job in self._store.load_all():
             if job.definition is None:
                 continue
@@ -117,10 +170,10 @@ class MonitorLoop:
             runtime.last_status = new_status
             if not runtime.submitted:
                 if self._check_cancel(job):
-                    self._store.remove(job.job_id)
+                    self._store.mark_finished(job.job_id, "cancelled")
                     continue
                 if self._check_finish(job):
-                    self._store.remove(job.job_id)
+                    self._store.mark_finished(job.job_id, "finished")
                     continue
                 if self._check_start(job):
                     self._start_job(job)
@@ -129,22 +182,46 @@ class MonitorLoop:
 
             if self._check_cancel(job):
                 if runtime_id:
-                    self._client.cancel(runtime_id)
-                    self._client.remove(runtime_id)
-                self._store.remove(job.job_id)
+                    client = self._get_client(job)
+                    client.cancel(runtime_id)
+                    client.remove(runtime_id)
+                self._store.mark_finished(job.job_id, "cancelled")
                 continue
             if self._check_finish(job):
                 if runtime_id:
-                    self._client.remove(runtime_id)
-                self._store.remove(job.job_id)
+                    client = self._get_client(job)
+                    client.remove(runtime_id)
+                self._store.mark_finished(job.job_id, "finished")
                 continue
-            if not self._process_log_events(job):
+
+            # Process log events
+            effect = self._process_log_events(job)
+            if effect == "finished":
+                if runtime_id:
+                    client = self._get_client(job)
+                    client.remove(runtime_id)
+                self._store.mark_finished(job.job_id, "finished")
                 continue
+            if effect == "cancelled":
+                if runtime_id:
+                    client = self._get_client(job)
+                    client.cancel(runtime_id)
+                    client.remove(runtime_id)
+                self._store.mark_finished(job.job_id, "cancelled")
+                continue
+            if effect == "restart":
+                self._restart_job(job)
+                self._store.upsert(job)
+                continue
+
+            # Check if job completed naturally
             if runtime.last_status in {"COMPLETED", "FAILED", "CANCELLED"}:
                 if runtime_id:
-                    self._client.remove(runtime_id)
-                self._store.remove(job.job_id)
+                    client = self._get_client(job)
+                    client.remove(runtime_id)
+                self._store.mark_finished(job.job_id, "finished")
                 continue
+
             self._store.upsert(job)
 
     def _check_start(self, job: JobRecordConfig) -> bool:
@@ -169,39 +246,54 @@ class MonitorLoop:
         runtime = job.runtime
         runtime.attempts += 1
         runtime.start_ts = time.time()
-        runtime_job_id = self._client.submit(job.definition)
+        client = self._get_client(job)
+        runtime_job_id = client.submit(job.definition)
         runtime.runtime_job_id = runtime_job_id
         runtime.submitted = True
         runtime.log_cursor = 0
 
-    def _process_log_events(self, job: JobRecordConfig) -> bool:
+    def _process_log_events(self, job: JobRecordConfig) -> str:
+        """Process log events by checking patterns in new log content.
+
+        Returns: "continue", "finished", "cancelled", or "restart"
+        """
         runtime = job.runtime
         definition = job.definition
         log_path = self._resolve_log_path(job)
         if not log_path.exists():
-            return True
+            return "continue"
+
         try:
             with log_path.open("r", encoding="utf-8", errors="replace") as handle:
                 handle.seek(runtime.log_cursor)
                 new_text = handle.read()
                 runtime.log_cursor = handle.tell()
         except OSError:
-            return True
+            return "continue"
 
         if not new_text:
-            return True
+            return "continue"
 
-        for idx, rule in enumerate(self._coerce_log_events(definition.log_events)):
-            if rule.action is None:
+        # Process each log event configuration (already parsed)
+        log_events = getattr(definition, "log_events", None) or []
+        for idx, event_cfg in enumerate(log_events):
+            if event_cfg.action is None:
                 continue
-            for match in self._iter_matches(rule, new_text):
-                metadata = self._build_metadata(job, rule, match, new_text)
-                event_id = build_event_id(job.job_id, rule.name, metadata)
-                binding = instantiate_action_binding(rule, event_name=rule.name, kind="log", index=idx)
-                action_state = runtime.action_state.get(binding.action_id, {})
+
+            # Create LogEvent instance
+            log_event = LogEvent(event_cfg)
+
+            # Check if event triggers
+            triggers = log_event.check_triggers(new_text)
+
+            for metadata in triggers:
+                event_id = build_event_id(job.job_id, event_cfg.name, metadata)
+                action_id = f"log:{event_cfg.name}:{idx}"
+                action_state = runtime.action_state.get(action_id, {})
+
                 event = EventRecord(
                     event_id=event_id,
-                    name=rule.name,
+                    name=event_cfg.name,
                     source="log",
                     payload=metadata,
                     metadata={
@@ -210,20 +302,65 @@ class MonitorLoop:
                         "last_action_ts": float(action_state.get("last_action_ts", 0.0)),
                     },
                 )
-                if self._evaluate_action_conditions(job, event, binding):
-                    result = binding.action.execute(self._action_context(event, job))
-                    binding.action.update_event(event, result)
-                    self._update_action_state(runtime, binding.action_id, result)
-                    effect = self._handle_action_result(job, result)
-                    if effect == "remove":
-                        return False
-                    if effect == "restart":
-                        return True
-        return True
 
-    def _status_action(self, job: JobRecordConfig, old_status: str, new_status: str):
-        for state_event in job.definition.state_events:
-            state_event = StateEvent(state_event)
+                # Instantiate and execute action
+                action = event_cfg.action.instantiate(BaseMonitorAction)
+                if self._evaluate_event_condition(job, event, event_cfg.condition, action_id):
+                    result = action.execute(self._action_context(event, job))
+                    self._update_action_state(runtime, action_id, result)
+                    effect = self._handle_action_result(job, result)
+                    if effect in ("finished", "cancelled", "restart"):
+                        return effect
+
+        return "continue"
+
+    def _status_action(self, job: JobRecordConfig, old_status: str | None, new_status: str | None):
+        """Process state transition events."""
+        runtime = job.runtime
+        definition = job.definition
+
+        # Skip if no state change
+        if old_status == new_status:
+            return
+
+        # Process each state event configuration (already parsed)
+        state_events = getattr(definition, "state_events", None) or []
+        for idx, event_cfg in enumerate(state_events):
+            if event_cfg.action is None:
+                continue
+
+            # Create StateEvent instance
+            state_event = StateEvent(event_cfg)
+
+            # Check if event triggers
+            if not state_event.check_trigger(old_status, new_status):
+                continue
+
+            # Build event metadata
+            metadata = state_event.build_metadata(old_status, new_status)
+            event_id = build_event_id(job.job_id, event_cfg.name, metadata)
+            action_id = f"state:{event_cfg.name}:{idx}"
+            action_state = runtime.action_state.get(action_id, {})
+
+            event = EventRecord(
+                event_id=event_id,
+                name=event_cfg.name,
+                source="state",
+                payload=metadata,
+                metadata={
+                    "job_id": job.job_id,
+                    "job_name": definition.name,
+                    "last_action_ts": float(action_state.get("last_action_ts", 0.0)),
+                },
+            )
+
+            # Instantiate and execute action
+            action = event_cfg.action.instantiate(BaseMonitorAction)
+            if self._evaluate_event_condition(job, event, event_cfg.condition, action_id):
+                result = action.execute(self._action_context(event, job))
+                self._update_action_state(runtime, action_id, result)
+                # Note: we don't handle remove/restart here as state changes are informational
+                # and shouldn't directly control job lifecycle
 
     def _action_context(self, event: EventRecord, job: JobRecordConfig):
         from monitor.actions import ActionContext
@@ -234,32 +371,34 @@ class MonitorLoop:
             attempts=job.runtime.attempts,
         )
 
-    def _evaluate_action_conditions(
+    def _evaluate_event_condition(
         self,
         job: JobRecordConfig,
         event: EventRecord,
-        binding,
+        condition_cfg: MonitorConditionInterface.cfgtype | None,
+        action_id: str,
     ) -> bool:
-        if not binding.conditions:
+        """Evaluate a single event condition."""
+        if condition_cfg is None:
             return True
-        action_state = job.runtime.action_state.setdefault(binding.action_id, {})
-        condition_states = action_state.setdefault("conditions", {})
-        for idx, condition in enumerate(binding.conditions):
-            state = condition_states.setdefault(str(idx), {})
-            if "started_ts" not in state:
-                state["started_ts"] = time.time()
-            ctx = ConditionContext(
-                event=event,
-                job_metadata=self._build_job_metadata(job),
-                attempts=job.runtime.attempts,
-                state=state,
-                started_ts=state.get("started_ts"),
-            )
-            result = condition.check(ctx)
-            result = _apply_persistence(condition.config, state, result)
-            if not result.passed:
-                return False
-        return True
+
+        action_state = job.runtime.action_state.setdefault(action_id, {})
+        condition_state = action_state.setdefault("condition", {})
+
+        if "started_ts" not in condition_state:
+            condition_state["started_ts"] = time.time()
+
+        condition = condition_cfg.instantiate(MonitorConditionInterface)
+        ctx = ConditionContext(
+            event=event,
+            job_metadata=self._build_job_metadata(job),
+            attempts=job.runtime.attempts,
+            state=condition_state,
+            started_ts=condition_state.get("started_ts"),
+        )
+        result = condition.check(ctx)
+        result = _apply_persistence(condition_cfg, condition_state, result)
+        return result.passed
 
     def _evaluate_condition(
         self,
@@ -282,14 +421,12 @@ class MonitorLoop:
         return _apply_persistence(condition_cfg, state, result)
 
     def _build_job_metadata(self, job: JobRecordConfig) -> dict[str, Any]:
-        registration = job.definition
-        metadata = dict(registration.metadata)
+        definition = job.definition
+        metadata = dict(definition.metadata)
         metadata.setdefault("job_id", job.job_id)
-        metadata.setdefault("job_name", registration.name)
-        job_kind = registration.job_kind
-        if not job_kind:
-            job_kind = "slurm" if registration.slurm else "local"
-        metadata.setdefault("job_kind", job_kind)
+        metadata.setdefault("job_name", definition.name)
+        job_class = definition.class_name
+        metadata.setdefault("job_class", job_class)
         return metadata
 
     def _resolve_log_path(self, job: JobRecordConfig) -> Path:
@@ -310,80 +447,110 @@ class MonitorLoop:
             timestamp=timestamp,
         )
 
-    @staticmethod
-    def _coerce_log_events(events: list[Any]) -> list[LogEventConfig]:
-        coerced: list[LogEventConfig] = []
-        for item in events:
-            if isinstance(item, LogEventConfig):
-                coerced.append(item)
-            elif isinstance(item, dict):
-                coerced.append(parse_config(LogEventConfig, item))
-        return coerced
-
-    @staticmethod
-    def _iter_matches(rule: LogEventConfig, text: str) -> Iterable[re.Match[str]]:
-        if rule.pattern_type == "regex":
-            pattern = re.compile(rule.pattern, flags=re.MULTILINE)
-            return pattern.finditer(text)
-        escaped = re.escape(rule.pattern)
-        pattern = re.compile(escaped, flags=re.MULTILINE)
-        return pattern.finditer(text)
-
-    def _build_metadata(
-        self,
-        job: JobRecordConfig,
-        rule: LogEventConfig,
-        match: re.Match[str],
-        text: str,
-    ) -> dict[str, Any]:
-        metadata = dict(rule.metadata)
-        metadata["match"] = match.group(0)
-        metadata["line"] = match.string[match.start() : match.end()]
-        metadata.update(_extract_groups(match, rule))
-        return metadata
-
     def _update_action_state(self, runtime: JobRuntimeConfig, action_id: str, result) -> None:
         state = runtime.action_state.setdefault(action_id, {})
         state["last_action_ts"] = time.time()
         state["last_status"] = result.status
 
-    def _handle_action_result(self, job: JobRecordConfig, result) -> str:
-        metadata = result.metadata or {}
-        if "adjustments" in metadata:
-            self._restart_job(job, metadata["adjustments"])
+    def _handle_action_result(self, job: JobRecordConfig, result: ActionResult) -> str:
+        """Handle the result of an action execution.
+
+        Returns: "continue", "finished", "cancelled", or "restart"
+        """
+        # Handle special actions
+        if result.special == "restart":
             return "restart"
-        duplicate = metadata.get("duplicate_job")
-        if isinstance(duplicate, dict):
-            self._duplicate_job(job, duplicate)
-        finalize = metadata.get("finalize")
-        if finalize == "cancel":
-            self._finalize_job(job, cancel=True)
-            return "remove"
-        if finalize == "success":
-            self._finalize_job(job, cancel=False)
-            return "remove"
+
+        if result.special == "cancel":
+            return "cancelled"
+
+        if result.special == "finish":
+            return "finished"
+
+        # Handle new job submissions using typed config
+        if result.action_config is not None:
+            if isinstance(result.action_config, NewJobActionConfig) and isinstance(
+                result.action_config.job_config, LocalJobConfig
+            ):
+                self._submit_local_job(result.action_config.job_config)
+            elif isinstance(result.action_config, NewJobActionConfig) and isinstance(
+                result.action_config.job_config, SlurmJobConfig
+            ):
+                self._submit_slurm_job(result.action_config.job_config)
+
         return "continue"
 
-    def _restart_job(self, job: JobRecordConfig, adjustments: dict[str, Any]) -> None:
+    def _restart_job(self, job: JobRecordConfig) -> None:
+        """Restart job preserving condition_state, action_state, and attempts."""
         runtime = job.runtime
+        client = self._get_client(job)
+
+        # Cancel and remove existing job if it exists
         if runtime.runtime_job_id:
-            self._client.cancel(runtime.runtime_job_id)
-            self._client.remove(runtime.runtime_job_id)
+            client.cancel(runtime.runtime_job_id)
+            client.remove(runtime.runtime_job_id)
+
+        # Reset runtime fields but preserve state and attempts
         runtime.submitted = False
         runtime.runtime_job_id = None
         runtime.log_cursor = 0
-        runtime.condition_state = {}
-        runtime.action_state = {}
         runtime.start_ts = None
+        # Note: condition_state, action_state, and attempts are preserved
+
+        # Restart the job
         self._start_job(job)
 
-    def _finalize_job(self, job: JobRecordConfig, *, cancel: bool) -> None:
-        runtime = job.runtime
-        if runtime.runtime_job_id:
-            if cancel:
-                self._client.cancel(runtime.runtime_job_id)
-            self._client.remove(runtime.runtime_job_id)
-        self._store.remove(job.job_id)
+    def _submit_local_job(self, job_config: ConfigInterface) -> None:
+        """Submit a new local job (fire-and-forget)."""
+        if not self._local_client:
+            LOGGER.error("Cannot submit local job: no local client available")
+            return
+
+        try:
+            job_instance = job_config.instantiate(JobInterface)
+            job_id = self._local_client.submit(job_instance)
+            LOGGER.info(f"Submitted local job {job_id}")
+        except Exception as e:
+            LOGGER.error(f"Failed to submit local job: {e}")
+
+    def _submit_slurm_job(self, job_config: ConfigInterface) -> None:
+        """Submit a new Slurm job (fire-and-forget)."""
+        if not self._slurm_client:
+            LOGGER.error("Cannot submit Slurm job: no Slurm client available")
+            return
+
+        try:
+            job_instance = job_config.instantiate(JobInterface)
+            job_id = self._slurm_client.submit(job_instance)
+            LOGGER.info(f"Submitted Slurm job {job_id}")
+        except Exception as e:
+            LOGGER.error(f"Failed to submit Slurm job: {e}")
+
+
+def _normalize_job_definition(job: JobRecordConfig) -> None:
+    """Parse and normalize all nested event configs in the job definition."""
+    if job.definition is None:
+        return
+
+    # Parse log events
+    if hasattr(job.definition, "log_events") and job.definition.log_events:
+        parsed_log_events = []
+        for item in job.definition.log_events:
+            if isinstance(item, LogEventConfig):
+                parsed_log_events.append(item)
+            elif isinstance(item, dict):
+                parsed_log_events.append(parse_config(LogEventConfig, item))
+        job.definition.log_events = parsed_log_events
+
+    # Parse state events
+    if hasattr(job.definition, "state_events") and job.definition.state_events:
+        parsed_state_events = []
+        for item in job.definition.state_events:
+            if isinstance(item, StateEventConfig):
+                parsed_state_events.append(item)
+            elif isinstance(item, dict):
+                parsed_state_events.append(parse_config(StateEventConfig, item))
+        job.definition.state_events = parsed_state_events
 
 
 def _apply_persistence(
@@ -402,44 +569,6 @@ def _apply_persistence(
     if (not result.passed) and persistent_fail:
         condition_state["latched_fail"] = True
     return result
-
-
-def _clone_registration(registration):
-    payload = asdict(registration)
-    return parse_config(JobInterface.cfgtype, payload)
-
-
-def _suffix_path(path: str, suffix: str) -> str:
-    if not suffix:
-        return path
-    candidate = Path(path)
-    if candidate.suffix:
-        return f"{candidate.with_suffix('')}{suffix}{candidate.suffix}"
-    return f"{path}{suffix}"
-
-
-def _unique_job_id(store: JobFileStore, base_id: str) -> str:
-    job_id = base_id
-    counter = 1
-    while store.path_for(job_id).exists():
-        job_id = f"{base_id}-{counter}"
-        counter += 1
-    return job_id
-
-
-def _extract_groups(match: re.Match[str], rule: LogEventConfig) -> dict[str, Any]:
-    extracted: dict[str, Any] = {}
-    if not rule.extract_groups:
-        return extracted
-    for key, group in rule.extract_groups.items():
-        if isinstance(group, str) and group == "match":
-            extracted[key] = match.group(0)
-            continue
-        try:
-            extracted[key] = match.group(group)
-        except (IndexError, KeyError):
-            continue
-    return extracted
 
 
 def _import_registry() -> None:

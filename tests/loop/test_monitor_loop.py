@@ -5,10 +5,8 @@ import time
 from pathlib import Path
 
 from monitor.actions import (
-    DuplicateActionConfig,
     FinishActionConfig,
     CancelActionConfig,
-    LocalActionBackendConfig,
     RestartActionConfig,
     LogActionConfig,
     LogEventConfig,
@@ -20,44 +18,22 @@ from monitor.submission import LocalJobConfig
 
 
 class FakeClient:
+    """Fake client that matches JobClientProtocol interface."""
+
     def __init__(self) -> None:
-        self.submit_calls: list[tuple] = []
+        self.submit_calls: list = []
         self.cancel_calls: list[str] = []
         self.remove_calls: list[str] = []
         self._counter = 0
         self._statuses: dict[str, str] = {}
 
-    def submit(
-        self,
-        name,
-        command,
-        log_path,
-        extra_args=None,
-        log_to_file=None,
-        log_path_current=None,
-        slurm=None,
-    ) -> str:
+    def submit(self, job) -> str:
+        """Submit a job (matches JobClientProtocol)."""
         self._counter += 1
         job_id = f"job-{self._counter}"
-        self.submit_calls.append(
-            (name, list(command), log_path, list(extra_args or []), log_to_file, log_path_current, slurm)
-        )
+        self.submit_calls.append(job)
         self._statuses[job_id] = "RUNNING"
         return job_id
-
-    def submit_array(
-        self,
-        array_name,
-        command,
-        log_paths,
-        task_names,
-        extra_args=None,
-        start_index=None,
-        log_to_file=None,
-        log_path_current=None,
-        slurm=None,
-    ):
-        raise NotImplementedError
 
     def cancel(self, job_id: str) -> None:
         self.cancel_calls.append(job_id)
@@ -79,12 +55,12 @@ def _write_log(path: Path, text: str) -> None:
 def test_monitor_loop_start_condition(tmp_path: Path) -> None:
     store = JobFileStore(tmp_path / "state")
     client = FakeClient()
-    loop = MonitorLoop(store, client, poll_interval_seconds=0.1)
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
 
     gate = tmp_path / "ready.flag"
     record = JobRecordConfig(
         job_id="job1",
-        registration=LocalJobConfig(
+        definition=LocalJobConfig(
             name="job1",
             command=["echo", "hi"],
             log_path=str(tmp_path / "job1_%j.log"),
@@ -109,11 +85,11 @@ def test_monitor_loop_start_condition(tmp_path: Path) -> None:
 def test_monitor_loop_cancel_condition(tmp_path: Path) -> None:
     store = JobFileStore(tmp_path / "state")
     client = FakeClient()
-    loop = MonitorLoop(store, client, poll_interval_seconds=0.1)
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
 
     record = JobRecordConfig(
         job_id="job2",
-        registration=LocalJobConfig(
+        definition=LocalJobConfig(
             name="job2",
             command=["echo", "bye"],
             log_path=str(tmp_path / "job2_%j.log"),
@@ -126,7 +102,9 @@ def test_monitor_loop_cancel_condition(tmp_path: Path) -> None:
     store.upsert(record)
 
     loop.observe_once()
-    assert store.load("job2") is None
+    loaded = store.load("job2")
+    assert loaded is not None
+    assert loaded.runtime.final_state == "cancelled"
     assert client.cancel_calls == ["job-99"]
     assert client.remove_calls == ["job-99"]
 
@@ -134,11 +112,11 @@ def test_monitor_loop_cancel_condition(tmp_path: Path) -> None:
 def test_monitor_loop_restart_action(tmp_path: Path) -> None:
     store = JobFileStore(tmp_path / "state")
     client = FakeClient()
-    loop = MonitorLoop(store, client, poll_interval_seconds=0.1)
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
 
     record = JobRecordConfig(
         job_id="job3",
-        registration=LocalJobConfig(
+        definition=LocalJobConfig(
             name="job3",
             command=["echo", "run"],
             log_path=str(tmp_path / "job3_%j.log"),
@@ -146,11 +124,7 @@ def test_monitor_loop_restart_action(tmp_path: Path) -> None:
                 LogEventConfig(
                     name="oom",
                     pattern="OOM",
-                    action=RestartActionConfig(
-                        reason="oom",
-                        extra_args_append=["--retry={attempts}"],
-                        backend_config=LocalActionBackendConfig(),
-                    ),
+                    action=RestartActionConfig(reason="oom"),
                 )
             ],
         ),
@@ -162,6 +136,7 @@ def test_monitor_loop_restart_action(tmp_path: Path) -> None:
     assert loaded is not None
     job_id = loaded.runtime.runtime_job_id
     assert job_id is not None
+    assert loaded.runtime.attempts == 1
 
     log_path = tmp_path / f"job3_{job_id}.log"
     _write_log(log_path, "OOM\n")
@@ -169,60 +144,20 @@ def test_monitor_loop_restart_action(tmp_path: Path) -> None:
     loop.observe_once()
     loaded = store.load("job3")
     assert loaded is not None
-    assert len(client.submit_calls) == 2
+    assert len(client.submit_calls) == 2  # Original + restart
     assert client.cancel_calls == [job_id]
-    assert loaded.registration.extra_args == ["--retry=1"]
-
-
-def test_monitor_loop_duplicate_action(tmp_path: Path) -> None:
-    store = JobFileStore(tmp_path / "state")
-    client = FakeClient()
-    loop = MonitorLoop(store, client, poll_interval_seconds=0.1)
-
-    log_current = tmp_path / "job4_latest.log"
-    record = JobRecordConfig(
-        job_id="job4",
-        registration=LocalJobConfig(
-            name="job4",
-            command=["echo", "dup"],
-            log_path=str(tmp_path / "job4_%j.log"),
-            log_path_current=str(log_current),
-            log_events=[
-                LogEventConfig(
-                    name="dup",
-                    pattern="DUP",
-                    action=DuplicateActionConfig(
-                        name_suffix="-copy",
-                        backend_config=LocalActionBackendConfig(),
-                    ),
-                )
-            ],
-        ),
-    )
-    record.runtime.submitted = True
-    record.runtime.runtime_job_id = "job-1"
-    client._statuses["job-1"] = "RUNNING"
-    store.upsert(record)
-
-    _write_log(log_current, "DUP\n")
-    loop.observe_once()
-
-    assert store.load("job4") is not None
-    duplicate = store.load("job4-copy")
-    assert duplicate is not None
-    assert duplicate.registration.name.endswith("-copy")
-    assert duplicate.registration.log_path.endswith("-copy.log")
+    assert loaded.runtime.attempts == 2  # Attempts preserved
 
 
 def test_monitor_loop_finish_condition(tmp_path: Path) -> None:
     store = JobFileStore(tmp_path / "state")
     client = FakeClient()
-    loop = MonitorLoop(store, client, poll_interval_seconds=0.1)
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
 
     finished = tmp_path / "done.txt"
     record = JobRecordConfig(
         job_id="job5",
-        registration=LocalJobConfig(
+        definition=LocalJobConfig(
             name="job5",
             command=["echo", "done"],
             log_path=str(tmp_path / "job5_%j.log"),
@@ -235,23 +170,27 @@ def test_monitor_loop_finish_condition(tmp_path: Path) -> None:
     store.upsert(record)
 
     loop.observe_once()
-    assert store.load("job5") is not None
+    loaded = store.load("job5")
+    assert loaded is not None
+    assert loaded.runtime.final_state is None
 
     finished.write_text("done", encoding="utf-8")
     loop.observe_once()
-    assert store.load("job5") is None
+    loaded = store.load("job5")
+    assert loaded is not None
+    assert loaded.runtime.final_state == "finished"
     assert client.remove_calls == ["job-5"]
 
 
 def test_monitor_loop_cancel_action(tmp_path: Path) -> None:
     store = JobFileStore(tmp_path / "state")
     client = FakeClient()
-    loop = MonitorLoop(store, client, poll_interval_seconds=0.1)
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
 
     log_current = tmp_path / "job6_latest.log"
     record = JobRecordConfig(
         job_id="job6",
-        registration=LocalJobConfig(
+        definition=LocalJobConfig(
             name="job6",
             command=["echo", "cancel"],
             log_path=str(tmp_path / "job6_%j.log"),
@@ -260,10 +199,7 @@ def test_monitor_loop_cancel_action(tmp_path: Path) -> None:
                 LogEventConfig(
                     name="cancel",
                     pattern="CANCEL",
-                    action=CancelActionConfig(
-                        reason="user_cancel",
-                        backend_config=LocalActionBackendConfig(),
-                    ),
+                    action=CancelActionConfig(reason="user_cancel"),
                 )
             ],
         ),
@@ -276,7 +212,9 @@ def test_monitor_loop_cancel_action(tmp_path: Path) -> None:
     _write_log(log_current, "CANCEL\n")
     loop.observe_once()
 
-    assert store.load("job6") is None
+    loaded = store.load("job6")
+    assert loaded is not None
+    assert loaded.runtime.final_state == "cancelled"
     assert client.cancel_calls == ["job-6"]
     assert client.remove_calls == ["job-6"]
 
@@ -284,12 +222,12 @@ def test_monitor_loop_cancel_action(tmp_path: Path) -> None:
 def test_monitor_loop_log_path_current_used(tmp_path: Path) -> None:
     store = JobFileStore(tmp_path / "state")
     client = FakeClient()
-    loop = MonitorLoop(store, client, poll_interval_seconds=0.1)
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
 
     log_current = tmp_path / "job7_latest.log"
     record = JobRecordConfig(
         job_id="job7",
-        registration=LocalJobConfig(
+        definition=LocalJobConfig(
             name="job7",
             command=["echo", "finish"],
             log_path=str(tmp_path / "job7_%j.log"),
@@ -298,10 +236,7 @@ def test_monitor_loop_log_path_current_used(tmp_path: Path) -> None:
                 LogEventConfig(
                     name="finish",
                     pattern="FINISH",
-                    action=FinishActionConfig(
-                        reason="done",
-                        backend_config=LocalActionBackendConfig(),
-                    ),
+                    action=FinishActionConfig(reason="done"),
                 )
             ],
         ),
@@ -313,18 +248,20 @@ def test_monitor_loop_log_path_current_used(tmp_path: Path) -> None:
 
     _write_log(log_current, "FINISH\n")
     loop.observe_once()
-    assert store.load("job7") is None
+    loaded = store.load("job7")
+    assert loaded is not None
+    assert loaded.runtime.final_state == "finished"
 
 
-def test_monitor_loop_action_conditions(tmp_path: Path, monkeypatch) -> None:
+def test_monitor_loop_action_condition(tmp_path: Path, monkeypatch) -> None:
     store = JobFileStore(tmp_path / "state")
     client = FakeClient()
-    loop = MonitorLoop(store, client, poll_interval_seconds=0.1)
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
 
     log_current = tmp_path / "job8_latest.log"
     record = JobRecordConfig(
         job_id="job8",
-        registration=LocalJobConfig(
+        definition=LocalJobConfig(
             name="job8",
             command=["echo", "cond"],
             log_path=str(tmp_path / "job8_%j.log"),
@@ -334,7 +271,7 @@ def test_monitor_loop_action_conditions(tmp_path: Path, monkeypatch) -> None:
                     name="cool",
                     pattern="COOL",
                     action=LogActionConfig(message="cool"),
-                    conditions=[CooldownConditionConfig(cooldown_seconds=60)],
+                    condition=CooldownConditionConfig(cooldown_seconds=60),
                 )
             ],
         ),
@@ -348,25 +285,26 @@ def test_monitor_loop_action_conditions(tmp_path: Path, monkeypatch) -> None:
     loop.observe_once()
     state = store.load("job8")
     assert state is not None
-    action_state = state.runtime.action_state["log:cool:LogAction:0"]
+    action_state = state.runtime.action_state["log:cool:0"]
     last_ts = action_state["last_action_ts"]
 
+    # Try again within cooldown - should not execute
     monkeypatch.setattr(time, "time", lambda: last_ts + 1)
-    _write_log(log_current, "COOL\n")
+    _write_log(log_current, "COOL\nCOOL\n")
     loop.observe_once()
-    action_state = store.load("job8").runtime.action_state["log:cool:LogAction:0"]
-    assert action_state["last_action_ts"] == last_ts
+    action_state = store.load("job8").runtime.action_state["log:cool:0"]
+    assert action_state["last_action_ts"] == last_ts  # Unchanged
 
 
 def test_monitor_loop_persistent_fail(tmp_path: Path) -> None:
     store = JobFileStore(tmp_path / "state")
     client = FakeClient()
-    loop = MonitorLoop(store, client, poll_interval_seconds=0.1)
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
 
     log_current = tmp_path / "job9_latest.log"
     record = JobRecordConfig(
         job_id="job9",
-        registration=LocalJobConfig(
+        definition=LocalJobConfig(
             name="job9",
             command=["echo", "cond"],
             log_path=str(tmp_path / "job9_%j.log"),
@@ -376,7 +314,7 @@ def test_monitor_loop_persistent_fail(tmp_path: Path) -> None:
                     name="timeout",
                     pattern="TIMEOUT",
                     action=LogActionConfig(message="timeout"),
-                    conditions=[TimeoutConditionConfig(timeout_seconds=0.0, persistent_fail=True)],
+                    condition=TimeoutConditionConfig(timeout_seconds=0.0, persistent_fail=True),
                 )
             ],
         ),
@@ -390,19 +328,19 @@ def test_monitor_loop_persistent_fail(tmp_path: Path) -> None:
     loop.observe_once()
     state = store.load("job9")
     assert state is not None
-    condition_state = state.runtime.action_state["log:timeout:LogAction:0"]["conditions"]["0"]
+    condition_state = state.runtime.action_state["log:timeout:0"]["condition"]
     assert condition_state["latched_fail"] is True
 
 
 def test_monitor_loop_composite_condition(tmp_path: Path) -> None:
     store = JobFileStore(tmp_path / "state")
     client = FakeClient()
-    loop = MonitorLoop(store, client, poll_interval_seconds=0.1)
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
 
     gate = tmp_path / "ready.flag"
     record = JobRecordConfig(
         job_id="job10",
-        registration=LocalJobConfig(
+        definition=LocalJobConfig(
             name="job10",
             command=["echo", "go"],
             log_path=str(tmp_path / "job10_%j.log"),
@@ -421,3 +359,32 @@ def test_monitor_loop_composite_condition(tmp_path: Path) -> None:
     gate.write_text("ok", encoding="utf-8")
     loop.observe_once()
     assert store.load("job10").runtime.submitted is True
+
+
+def test_monitor_loop_completed_status(tmp_path: Path) -> None:
+    """Test that jobs with COMPLETED status are marked finished."""
+    store = JobFileStore(tmp_path / "state")
+    client = FakeClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    record = JobRecordConfig(
+        job_id="job11",
+        definition=LocalJobConfig(
+            name="job11",
+            command=["echo", "done"],
+            log_path=str(tmp_path / "job11_%j.log"),
+        ),
+    )
+    record.runtime.submitted = True
+    record.runtime.runtime_job_id = "job-11"
+    client._statuses["job-11"] = "RUNNING"
+    store.upsert(record)
+
+    # Mark as completed
+    client._statuses["job-11"] = "COMPLETED"
+    loop.observe_once()
+
+    loaded = store.load("job11")
+    assert loaded is not None
+    assert loaded.runtime.final_state == "finished"
+    assert loaded.runtime.last_status is None

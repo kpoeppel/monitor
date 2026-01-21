@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from monitor.actions import EventRecord, EventStatus, build_event_id, event_key
+from monitor.actions import EventRecord, build_event_id, event_key
 
 
 def test_build_event_id_includes_checkpoint() -> None:
@@ -14,8 +14,7 @@ def test_event_key_stable_hash() -> None:
     assert key1 == key2
 
 
-def test_event_record_status_updates() -> None:
+def test_event_record_set_status_appends_note() -> None:
     record = EventRecord(event_id="e1", name="evt", source="log")
-    record.set_status(EventStatus.PROCESSED, note="ok")
-    assert record.status == EventStatus.PROCESSED
+    record.set_status(note="ok")
     assert record.history[-1]["note"] == "ok"

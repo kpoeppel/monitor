@@ -8,7 +8,7 @@ from pathlib import Path
 import hashlib
 import json
 import logging
-import subprocess
+import re
 import time
 from typing import Any, Literal
 
@@ -16,12 +16,14 @@ from compoconf import ConfigInterface, RegistrableConfigInterface, register, reg
 
 from monitor.conditions import MonitorConditionInterface
 from monitor.utils.template import replace_braced_keys
-from slurm_gen import SlurmConfig
 
 LOGGER = logging.getLogger(__name__)
 
 
-SPECIAL_ACTIONS = ("restart", "cancel", "finish", "noop")
+@register_interface
+class JobInterface(RegistrableConfigInterface):
+    """Registrable interface for job configurations."""
+
 
 @dataclass(kw_only=True)
 class ActionResult:
@@ -30,7 +32,8 @@ class ActionResult:
     special: Literal["cancel", "finish", "restart", "noop"] = "noop"
     message: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
-
+    status: str = "success"  # For tracking action execution status
+    action_config: BaseMonitorAction.cfgtype | None = None  # Reference to the action's config for typed access
 
 
 @dataclass(kw_only=True)
@@ -145,94 +148,27 @@ class LogAction(BaseMonitorAction):
 
 
 @dataclass
-class RunCommandActionConfig(ConfigInterface):
-    class_name: str = "RunCommandAction"
-    command: list[str] = field(default_factory=list)
-    cwd: str | None = None
+class NewJobActionConfig(ConfigInterface):
+    class_name: str = "NewJobAction"
+    job_config: JobInterface.cfgtype = field(default_factory=MissingValue)
 
 
 @register
-class RunCommandAction(BaseMonitorAction):
-    config: RunCommandActionConfig
+class NewJobAction(BaseMonitorAction):
+    config: NewJobActionConfig
 
     def execute(self, context: ActionContext) -> ActionResult:
-        if not self.config.command:
-            return ActionResult(status="failed", message="command is empty")
-        rendered = [context.render(segment) for segment in self.config.command]
-        cwd = self.config.cwd or (str(context.workspace) if context.workspace else None)
-        try:
-            proc = subprocess.run(
-                rendered,
-                capture_output=True,
-                text=True,
-                cwd=cwd,
-            )
-            if proc.returncode == 0:
-                return ActionResult(
-                    status="success",
-                    message="command completed",
-                    metadata={"stdout": proc.stdout.strip()},
-                )
-            return ActionResult(
-                status="failed",
-                message=f"command exited {proc.returncode}",
-                metadata={"stdout": proc.stdout.strip(), "stderr": proc.stderr.strip()},
-            )
-        except Exception as e:  # pragma: no cover
-            return ActionResult(status="failed", message=f"Command execution error: {e}")
-
-
-@register_interface
-class ActionBackendInterface(RegistrableConfigInterface):
-    """Backend-specific configuration for actions."""
+        return ActionResult(
+            status="success",
+            message="Submitting local command job",
+            action_config=self.config,
+        )
 
 
 @dataclass
-class ActionBackendConfig(ConfigInterface):
-    class_name: str = "ActionBackend"
-    job_kind: str = ""
-
-
-@dataclass
-class LocalActionBackendConfig(ActionBackendConfig):
-    class_name: str = "LocalActionBackend"
-    job_kind: str = "local"
-
-
-@dataclass
-class SlurmActionBackendConfig(ActionBackendConfig):
-    class_name: str = "SlurmActionBackend"
-    job_kind: str = "slurm"
-    slurm: SlurmConfig | None = None
-
-
-@register
-class ActionBackend(ActionBackendInterface):
-    config: ActionBackendConfig
-
-    def __init__(self, config: ActionBackendConfig) -> None:
-        self.config = config
-
-
-@register
-class LocalActionBackend(ActionBackendInterface):
-    config: LocalActionBackendConfig
-
-    def __init__(self, config: LocalActionBackendConfig) -> None:
-        self.config = config
-
-
-@register
-class SlurmActionBackend(ActionBackendInterface):
-    config: SlurmActionBackendConfig
-
-    def __init__(self, config: SlurmActionBackendConfig) -> None:
-        self.config = config
-
-
-@dataclass
-class RestartActionConfig:
+class RestartActionConfig(ConfigInterface):
     class_name: str = "RestartAction"
+    reason: str = "restarting job"
 
 
 @register
@@ -240,60 +176,28 @@ class RestartAction(BaseMonitorAction):
     config: RestartActionConfig
 
     def execute(self, context: ActionContext) -> ActionResult:
-        mismatch = _ensure_backend(context, self.config.backend_config)
-        if mismatch:
-            return mismatch
         return ActionResult(
-            status="retry",
+            special="restart",
+            status="success",
             message=self.config.reason,
         )
-
-
-def _ensure_backend(
-    context: ActionContext,
-    backend_config: ActionBackendInterface.cfgtype | None,
-) -> ActionResult | None:
-    backend_config = _coerce_backend_config(backend_config)
-    if backend_config is None:
-        return None
-    expected_kind = getattr(backend_config, "job_kind", "")
-    if not expected_kind:
-        return None
-    job_kind = context.job_metadata.get("job_kind")
-    if job_kind and job_kind != expected_kind:
-        return ActionResult(
-            status="failed",
-            message=f"action requires job_kind '{expected_kind}' but got '{job_kind}'",
-        )
-    return None
-
-
-def _coerce_backend_config(
-    backend_config: ActionBackendInterface.cfgtype | None,
-) -> ActionBackendConfig | None:
-    if backend_config is None:
-        return None
-    if isinstance(backend_config, dict):
-        raise TypeError("backend_config must be parsed config, not dict")
-    return backend_config
 
 
 @dataclass
 class FinishActionConfig(ConfigInterface):
     class_name: str = "FinishAction"
     reason: str = "finished"
-    backend_config: ActionBackendInterface.cfgtype | None = None
 
 
 @register
 class FinishAction(BaseMonitorAction):
     config: FinishActionConfig
 
-    def execute(self, context: ActionContext) -> :
+    def execute(self, context: ActionContext) -> ActionResult:
         return ActionResult(
+            special="finish",
             status="success",
             message=self.config.reason,
-            metadata={"finalize": "success"},
         )
 
 
@@ -301,7 +205,6 @@ class FinishAction(BaseMonitorAction):
 class CancelActionConfig(ConfigInterface):
     class_name: str = "CancelAction"
     reason: str = "cancelled"
-    backend_config: ActionBackendInterface.cfgtype | None = None
 
 
 @register
@@ -309,13 +212,10 @@ class CancelAction(BaseMonitorAction):
     config: CancelActionConfig
 
     def execute(self, context: ActionContext) -> ActionResult:
-        mismatch = _ensure_backend(context, self.config.backend_config)
-        if mismatch:
-            return mismatch
         return ActionResult(
+            special="cancel",
             status="success",
             message=self.config.reason,
-            metadata={"finalize": "cancel"},
         )
 
 
@@ -340,51 +240,101 @@ class LogEventConfig(EventConfig):
 class StateEventConfig(EventConfig):
     """Configuration for a state-triggered event and action."""
 
-    transition: tuple[str, str] = field(default_factory=MissingValue)
+    transition: tuple[str | None, str | None] = field(default_factory=MissingValue)
 
     def __post_init__(self):
         assert self.transition is not MissingValue
 
 
+class LogEvent:
+    """Handles log pattern matching and action execution."""
+
+    config: LogEventConfig
+
+    def __init__(self, config: LogEventConfig):
+        self.config = config
+
+    def check_triggers(self, log_text: str) -> list[dict[str, Any]]:
+        """Check if event triggers in the given log text, return metadata for each match."""
+        triggers = []
+        for match in self._iter_matches(log_text):
+            metadata = self._build_metadata(match, log_text)
+            triggers.append(metadata)
+        return triggers
+
+    def _iter_matches(self, text: str) -> list:
+        """Find all pattern matches in text."""
+        if self.config.pattern_type == "regex":
+            pattern = re.compile(self.config.pattern, flags=re.MULTILINE)
+            return list(pattern.finditer(text))
+        escaped = re.escape(self.config.pattern)
+        pattern = re.compile(escaped, flags=re.MULTILINE)
+        return list(pattern.finditer(text))
+
+    def _build_metadata(self, match, text: str) -> dict[str, Any]:
+        """Build metadata from a pattern match."""
+        metadata = dict(self.config.metadata)
+        metadata["match"] = match.group(0)
+        metadata["line"] = match.string[match.start() : match.end()]
+
+        # Extract groups based on configuration
+        if self.config.extract_groups:
+            for key, group in self.config.extract_groups.items():
+                if isinstance(group, str) and group == "match":
+                    metadata[key] = match.group(0)
+                    continue
+                try:
+                    metadata[key] = match.group(group)
+                except (IndexError, KeyError):
+                    continue
+
+        return metadata
+
+
 class StateEvent:
+    """Handles state transition matching and action execution."""
+
     config: StateEventConfig
 
     def __init__(self, config: StateEventConfig):
         self.config = config
 
+    def check_trigger(self, old_status: str | None, new_status: str | None) -> bool:
+        """Check if the state transition matches this event's transition."""
+        expected_old, expected_new = self.config.transition
+        # None in expected means "any state"
+        old_matches = expected_old is None or old_status == expected_old
+        new_matches = expected_new is None or new_status == expected_new
+        return old_matches and new_matches
 
-@dataclass
-class EventActionBinding:
-    """Runtime binding used by the monitor loop."""
-
-    action: BaseMonitorAction
-    conditions: list[MonitorConditionInterface]
-    action_id: str
+    def build_metadata(self, old_status: str | None, new_status: str | None) -> dict[str, Any]:
+        """Build metadata for the triggered event."""
+        metadata = dict(self.config.metadata)
+        metadata["old_status"] = old_status
+        metadata["new_status"] = new_status
+        metadata["transition"] = f"{old_status} -> {new_status}"
+        return metadata
 
 
 __all__ = [
-    "EventStatus",
+    "JobInterface",
     "EventRecord",
     "ActionResult",
     "event_key",
     "build_event_id",
     "ActionContext",
     "BaseMonitorAction",
-    "ActionBackendInterface",
-    "ActionBackendConfig",
-    "LocalActionBackendConfig",
-    "SlurmActionBackendConfig",
-    "ActionBackend",
-    "LocalActionBackend",
-    "SlurmActionBackend",
     "LogAction",
+    "NewJobAction",
+    "NewJobActionConfig",
     "RestartActionConfig",
     "RestartAction",
     "FinishActionConfig",
     "FinishAction",
     "CancelActionConfig",
     "CancelAction",
-    "RunCommandAction",
     "LogEventConfig",
-    "EventActionBinding",
+    "LogEvent",
+    "StateEventConfig",
+    "StateEvent",
 ]

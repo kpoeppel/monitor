@@ -14,7 +14,7 @@ def test_monitor_control_submit_and_cancel(tmp_path: Path) -> None:
     job_payload = {
         "class_name": "JobRecord",
         "job_id": "job1",
-        "registration": {
+        "definition": {
             "class_name": "LocalJob",
             "name": "job1",
             "command": ["echo", "hi"],
@@ -44,7 +44,7 @@ def test_monitor_status_json(tmp_path: Path) -> None:
     store.upsert(
         JobRecordConfig(
             job_id="job2",
-            registration=LocalJobConfig(
+            definition=LocalJobConfig(
                 name="job2",
                 command=["echo", "ok"],
                 log_path=str(tmp_path / "job2_%j.log"),
@@ -68,7 +68,7 @@ def test_monitor_cleanup_done_only(tmp_path: Path) -> None:
     store = JobFileStore(state_dir)
     record = JobRecordConfig(
         job_id="job3",
-        registration=LocalJobConfig(
+        definition=LocalJobConfig(
             name="job3",
             command=["echo", "ok"],
             log_path=str(tmp_path / "job3_%j.log"),

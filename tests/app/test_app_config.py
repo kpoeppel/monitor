@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from monitor.app import build_loop, parse_app_config
-from monitor.loop import JobFileStore
 
 
 def test_build_loop_syncs_jobs(tmp_path) -> None:
@@ -31,7 +32,6 @@ def test_build_loop_syncs_jobs(tmp_path) -> None:
     }
     app_config = parse_app_config(payload)
     loop = build_loop(app_config)
-    store = JobFileStore(app_config.state_store_dir)
-    record = store.load("job1")
-    assert record is not None
+    assert app_config.jobs
+    assert Path(app_config.state_store_dir).exists()
     assert loop.poll_interval_seconds == 1

@@ -4,24 +4,25 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field, MISSING
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from compoconf import (
     ConfigInterface,
-    RegistrableConfigInterface,
     register,
-    register_interface,
 )
-from slurm_gen import SlurmConfig
 from monitor.conditions import MonitorConditionInterface
-from monitor.actions import LogEventConfig, StateEventConfig
+from monitor.actions import JobInterface, LogEventConfig, StateEventConfig
+
+# Import slurm_gen optionally
+try:
+    from slurm_gen import SlurmConfig
+except ImportError:
+    SlurmConfig = Any  # type: ignore
+
+if TYPE_CHECKING:
+    from slurm_gen import SlurmConfig
 
 LOGGER = logging.getLogger(__name__)
-
-
-@register_interface
-class JobInterface(RegistrableConfigInterface):
-    """Registrable interface for job registrations."""
 
 
 @dataclass(kw_only=True)

@@ -1,8 +1,10 @@
 monitor:
-  class_name: MonitorLoop
   poll_interval_seconds: 1
 
 state_store_dir: "./state"
+
+local_client:
+  class_name: LocalCommandClient
 
 jobs:
   - job_id: job1
@@ -13,33 +15,26 @@ jobs:
       log_path: "job1_%j.log"
       log_path_current: "job1_latest.log"
       log_events:
-        - class_name: LogEvent
-          name: ready
+        - name: ready
           pattern: READY
           pattern_type: substring
           action:
             class_name: LogAction
             message: "job {job_name} is ready"
-        - class_name: LogEvent
-          name: oom
+        - name: oom
           pattern: "CUDA out of memory"
           pattern_type: substring
           action:
             class_name: RestartAction
-            reason: "oom"
-            extra_args_append:
-              - "--retry={attempts}"
-            backend_config:
-              class_name: LocalActionBackend
-        - class_name: LogEvent
-          name: duplicate
-          pattern: "DUPLICATE_JOB"
-          pattern_type: substring
+            reason: "oom - restarting job"
+        - name: checkpoint_saved
+          pattern: "Checkpoint saved: (\\d+)"
+          pattern_type: regex
+          extract_groups:
+            iteration: 1
           action:
-            class_name: DuplicateAction
-            name_suffix: "-copy"
-            backend_config:
-              class_name: LocalActionBackend
+            class_name: LogAction
+            message: "Checkpoint {iteration} saved"
   - job_id: job2
     registration:
       class_name: LocalJob
@@ -61,3 +56,16 @@ jobs:
         path: "./done.txt"
         pattern: "DONE"
         mode: contains
+      log_events:
+        - name: finish_early
+          pattern: "FINISH NOW"
+          pattern_type: substring
+          action:
+            class_name: FinishAction
+            reason: "early completion requested"
+        - name: cancel
+          pattern: "CANCEL JOB"
+          pattern_type: substring
+          action:
+            class_name: CancelAction
+            reason: "user requested cancellation"

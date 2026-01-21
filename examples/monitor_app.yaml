@@ -1,10 +1,11 @@
 monitor:
-  class_name: MonitorLoop
   poll_interval_seconds: 2
 
 state_store_dir: "./state"
-client:
+
+local_client:
   class_name: LocalCommandClient
+
 run:
   max_cycles: null
   sleep_seconds: null
@@ -18,33 +19,21 @@ jobs:
       log_path: "job1_%j.log"
       log_path_current: "job1_latest.log"
       log_events:
-        - class_name: LogEvent
-          name: ready
+        - name: ready
           pattern: READY
           pattern_type: substring
           action:
             class_name: LogAction
             message: "job {job_name} is ready"
-        - class_name: LogEvent
-          name: oom
+        - name: oom
           pattern: "CUDA out of memory"
           pattern_type: substring
           action:
             class_name: RestartAction
-            reason: "oom"
-            extra_args_append:
-              - "--retry={attempts}"
-            backend_config:
-              class_name: LocalActionBackend
-        - class_name: LogEvent
-          name: duplicate
-          pattern: "DUPLICATE_JOB"
-          pattern_type: substring
-          action:
-            class_name: DuplicateAction
-            name_suffix: "-copy"
-            backend_config:
-              class_name: LocalActionBackend
+            reason: "oom - restarting with same config"
+          condition:
+            class_name: MaxAttemptsCondition
+            max_attempts: 5
   - job_id: job2
     registration:
       class_name: LocalJob

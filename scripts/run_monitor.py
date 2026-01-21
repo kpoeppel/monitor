@@ -7,7 +7,7 @@ import argparse
 import time
 from pathlib import Path
 
-from monitor.app import build_loop, load_app_config, sync_loop
+from monitor.app import build_loop, load_app_config
 
 
 def main() -> None:
@@ -50,10 +50,11 @@ def main() -> None:
         except FileNotFoundError:
             current_mtime = last_mtime
         if current_mtime != last_mtime:
+            # Config changed - rebuild loop
             app_config = load_app_config(config_path)
             if args.state_dir:
                 app_config.state_store_dir = args.state_dir
-            sync_loop(loop, app_config)
+            loop = build_loop(app_config)
             last_mtime = current_mtime
         loop.observe_once()
         cycles += 1

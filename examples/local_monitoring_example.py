@@ -15,10 +15,11 @@ import shutil
 import logging
 from pathlib import Path
 from monitor import LocalCommandClient
-from monitor.actions import LogActionConfig, DuplicateActionConfig, LocalActionBackendConfig
+from monitor.actions import LogActionConfig, RestartActionConfig, FinishActionConfig
 from monitor.actions import LogEventConfig
 from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop
 from monitor.submission import LocalJobConfig
+from monitor.conditions import MaxAttemptsConditionConfig
 
 
 def main():
@@ -54,7 +55,7 @@ echo "Training completed successfully"
     # Setup local client + monitor loop
     local_client = LocalCommandClient()
     store = JobFileStore("./monitor_state")
-    loop = MonitorLoop(store, local_client, poll_interval_seconds=1)
+    loop = MonitorLoop(store, local_client=local_client, poll_interval_seconds=1)
 
     # Register the job
     log_path = "./training_%t.log"
@@ -63,7 +64,7 @@ echo "Training completed successfully"
     store.upsert(
         JobRecordConfig(
             job_id=job_id,
-            registration=LocalJobConfig(
+            definition=LocalJobConfig(
                 name="local-training",
                 command=["bash", str(script_path)],
                 log_path=log_path,
@@ -73,23 +74,18 @@ echo "Training completed successfully"
                         name="oom_error",
                         pattern="CUDA out of memory",
                         metadata={"reason": "OOM", "recoverable": True},
-                        action=LogActionConfig(message="Action for {event_name}", level="info"),
-                    ),
-                    LogEventConfig(
-                        name="duplicate_job",
-                        pattern="DUPLICATE_JOB",
-                        action=DuplicateActionConfig(
-                            name_suffix="-copy",
-                            backend_config=LocalActionBackendConfig(),
-                        ),
+                        action=RestartActionConfig(reason="OOM detected - restarting"),
+                        condition=MaxAttemptsConditionConfig(max_attempts=3),
                     ),
                     LogEventConfig(
                         name="training_started",
                         pattern="Starting training",
+                        action=LogActionConfig(message="Training started for {job_name}"),
                     ),
                     LogEventConfig(
                         name="training_complete",
                         pattern="Training completed successfully",
+                        action=FinishActionConfig(reason="Training completed"),
                     ),
                 ],
             ),
@@ -100,11 +96,16 @@ echo "Training completed successfully"
     print(f"Monitoring log: {log_path_current}")
     print("-" * 50)
 
-    while store.load(job_id):
+    # Run monitoring loop until job is marked finished
+    while True:
         loop.observe_once()
+        job = store.load(job_id, include_finished=True)
+        if job and job.runtime.final_state is not None:
+            print(f"Job finished with state: {job.runtime.final_state}")
+            print(f"Total attempts: {job.runtime.attempts}")
+            break
         time.sleep(2)
 
-    # Cleanup
     # Cleanup example files
     script_path.unlink(missing_ok=True)
     for path in Path(".").glob("training_*.log"):

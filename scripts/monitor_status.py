@@ -24,12 +24,12 @@ def main() -> None:
         "jobs": [
             {
                 "job_id": job.job_id,
-                "name": job.registration.name if job.registration else "",
+                "name": job.definition.name if job.definition else "",
                 "attempts": job.runtime.attempts,
                 "submitted": job.runtime.submitted,
                 "runtime_job_id": job.runtime.runtime_job_id,
                 "last_status": job.runtime.last_status,
-                "log_path": job.registration.log_path if job.registration else "",
+                "log_path": job.definition.log_path if job.definition else "",
             }
             for job in jobs
         ],
@@ -41,7 +41,7 @@ def main() -> None:
 
     print(f"Jobs: {len(jobs)}")
     for job in jobs:
-        name = job.registration.name if job.registration else ""
+        name = job.definition.name if job.definition else ""
         print(
             f"- {job.job_id} {name} status={job.runtime.last_status} "
             f"attempts={job.runtime.attempts} submitted={job.runtime.submitted}"

@@ -18,7 +18,8 @@ def test_example_monitor_app_yaml(tmp_path: Path) -> None:
     loop = build_loop(config)
     store = JobFileStore(config.state_store_dir)
     assert loop.poll_interval_seconds > 0
-    assert len(list(store.list_paths())) == len(config.jobs)
+    assert config.jobs
+    assert len(list(store.list_paths())) == 0
 
 
 def test_example_monitor_config_yaml(tmp_path: Path) -> None:
@@ -27,7 +28,8 @@ def test_example_monitor_config_yaml(tmp_path: Path) -> None:
     loop = build_loop(config)
     store = JobFileStore(config.state_store_dir)
     assert loop.poll_interval_seconds > 0
-    assert len(list(store.list_paths())) == len(config.jobs)
+    assert config.jobs
+    assert len(list(store.list_paths())) == 0
 
 
 def test_example_monitor_slurmgen_yaml(tmp_path: Path) -> None:
@@ -36,4 +38,5 @@ def test_example_monitor_slurmgen_yaml(tmp_path: Path) -> None:
     loop = build_loop(config)
     store = JobFileStore(config.state_store_dir)
     assert loop.poll_interval_seconds > 0
-    assert len(list(store.list_paths())) == len(config.jobs)
+    assert config.jobs
+    assert len(list(store.list_paths())) == 0

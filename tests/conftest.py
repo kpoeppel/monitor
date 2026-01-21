@@ -11,3 +11,11 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 if SLURM_GEN_SRC.exists() and str(SLURM_GEN_SRC) not in sys.path:
     sys.path.insert(0, str(SLURM_GEN_SRC))
+
+try:
+    from monitor.submission import LocalJobConfig, SlurmJobConfig
+
+    # LocalJobConfig.job_kind = "local"
+    # SlurmJobConfig.job_kind = "slurm"
+except ModuleNotFoundError:
+    pass

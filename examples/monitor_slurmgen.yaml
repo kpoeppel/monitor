@@ -1,17 +1,12 @@
 monitor:
-  class_name: MonitorLoop
   poll_interval_seconds: 30
 
 state_store_dir: "./state"
-client:
-  class_name: SlurmJobClient
-  output_dir: "./slurm_out"
-  slurm:
-    template_path: "./templates/job.sbatch"
-    script_dir: "./slurm_out/scripts"
-    log_dir: "./slurm_out/logs"
-  slurm_client:
-    class_name: SlurmClient
+
+slurm_client:
+  class_name: SlurmClient
+  base_client:
+    class_name: FakeSlurmClient
 
 jobs:
   - job_id: train
@@ -33,14 +28,20 @@ jobs:
           time: "0-04:00:00"
           gres: "gpu:1"
       log_events:
-        - class_name: LogEvent
-          name: oom
+        - name: oom
           pattern: "CUDA out of memory"
           pattern_type: substring
           action:
             class_name: RestartAction
-            reason: "oom"
-            extra_args_append:
-              - "--retry={attempts}"
-            backend_config:
-              class_name: SlurmActionBackend
+            reason: "oom - restarting Slurm job"
+          condition:
+            class_name: MaxAttemptsCondition
+            max_attempts: 3
+        - name: checkpoint
+          pattern: "Checkpoint saved: epoch (\\d+)"
+          pattern_type: regex
+          extract_groups:
+            epoch: 1
+          action:
+            class_name: LogAction
+            message: "Training checkpoint at epoch {epoch}"
