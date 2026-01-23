@@ -5,14 +5,20 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass, field, asdict, MISSING
+from dataclasses import dataclass, field, MISSING
+import hashlib
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+from collections.abc import Iterable
 
-from compoconf import ConfigInterface, parse_config
+from compoconf import ConfigInterface, parse_config, asdict
 
-from monitor.conditions import ConditionContext, ConditionResult, MonitorConditionInterface
-from monitor.actions import (
+from .conditions import (
+    ConditionContext,
+    ConditionResult,
+    MonitorConditionInterface,
+)
+from .actions import (
     EventRecord,
     build_event_id,
     LogEventConfig,
@@ -23,14 +29,18 @@ from monitor.actions import (
     BaseMonitorAction,
     NewJobActionConfig,
 )
-from monitor.job_client_protocol import JobClientProtocol
-from monitor.submission import JobInterface, SlurmJobConfig, LocalJobConfig
-from monitor.utils.paths import resolve_log_path
+from .job_client_protocol import JobClientProtocol
+from .submission import JobInterface, SlurmJobConfig, LocalJobConfig
+from .utils.paths import resolve_log_path
 
 LOGGER = logging.getLogger(__name__)
 
 
 SCHEMA_VERSION = 1
+
+
+def stable_hash_hex(s: str) -> str:
+    return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -103,6 +113,7 @@ class JobFileStore:
 
     def remove(self, job_id: str) -> None:
         """Actually delete a job file (use with caution - prefer mark_finished)."""
+
         path = self.path_for(job_id)
         if path.exists():
             path.unlink()
@@ -137,12 +148,14 @@ class MonitorLoop:
         slurm_client: JobClientProtocol | None = None,
         local_client: JobClientProtocol | None = None,
         poll_interval_seconds: float = 60.0,
+        show_poll_state: bool = True,
     ) -> None:
         _import_registry()
         self._store = store
         self._slurm_client = slurm_client
         self._local_client = local_client
         self.poll_interval_seconds = poll_interval_seconds
+        self.show_poll_state = show_poll_state
 
     def _get_client(self, job: JobRecordConfig) -> JobClientProtocol:
         """Get the appropriate client based on job configuration."""
@@ -227,6 +240,33 @@ class MonitorLoop:
 
             self._store.upsert(job)
 
+        if self.show_poll_state:
+            statuses: dict[str, str] = {}
+            if self._slurm_client:
+                statuses.update(self._slurm_client.squeue())
+            if self._local_client:
+                statuses.update(self._local_client.squeue())
+
+            poll_state = {}
+            for job in self._store.load_all():
+                if self._check_finish(job):
+                    continue
+                runtime = job.runtime
+                if not runtime.submitted:
+                    poll_state[job.runtime.runtime_job_id] = {
+                        "state": "pending",
+                        "start_condition": job.definition.start_condition,
+                        "runtime": job.runtime,
+                    }
+                else:
+                    poll_state[job.runtime.runtime_job_id] = {
+                        "state": statuses.get(runtime_id),
+                        "cancel_condition": job.definition.cancel_condition,
+                        "runtime": job.runtime,
+                    }
+
+            LOGGER.info(f"[{time.time():0.6f}]" + f"Monitor Polling: {poll_state}")
+
     def _check_start(self, job: JobRecordConfig) -> bool:
         condition = job.definition.start_condition
         if condition is None:
@@ -259,10 +299,15 @@ class MonitorLoop:
             else:
                 runtime_job_id = job_ids[0]
         else:
-            runtime_job_id = client.submit(job.definition)
-        runtime.runtime_job_id = runtime_job_id
-        runtime.submitted = True
-        runtime.log_cursor = 0
+            try:
+                runtime_job_id = client.submit(job.definition)
+            except Exception as e:
+                LOGGER.error(f"Unable to submit {job.definition.name}: {e}")
+                runtime_job_id = None
+        if runtime_job_id is not None:
+            runtime.runtime_job_id = runtime_job_id
+            runtime.submitted = True
+            runtime.log_cursor = 0
 
     def _start_jobs(self, job: JobRecordConfig, indices: list[int] | None = None) -> None:
         definition = job.definition
@@ -279,9 +324,13 @@ class MonitorLoop:
         runtime.start_ts = time.time()
         client = self._get_client(job)
         indices = indices or list(range(array_len))
-        job_ids = client.submit_array(definition, indices)
+        try:
+            runtime_job_ids = client.submit_array(definition, indices)
+        except Exception as e:
+            LOGGER.error(f"Unable to submit {job.definition.name}: {e}")
+            runtime_job_ids = []
 
-        for idx, runtime_job_id in zip(indices, job_ids):
+        for idx, runtime_job_id in zip(indices, runtime_job_ids):
             task_runtime = JobRuntimeConfig(
                 submitted=True,
                 attempts=runtime.attempts,
@@ -296,8 +345,8 @@ class MonitorLoop:
                 array_idx=idx,
             )
             self._store.upsert(task_record)
-
-        self._store.remove(job.job_id)
+        if runtime_job_ids:
+            self._store.remove(job.job_id)
 
     def _process_log_events(self, job: JobRecordConfig) -> str:
         """Process log events by checking patterns in new log content.
@@ -410,7 +459,7 @@ class MonitorLoop:
                 # and shouldn't directly control job lifecycle
 
     def _action_context(self, event: EventRecord, job: JobRecordConfig):
-        from monitor.actions import ActionContext
+        from .actions import ActionContext
 
         return ActionContext(
             event=event,
@@ -528,7 +577,8 @@ class MonitorLoop:
         return "continue"
 
     def _restart_job(self, job: JobRecordConfig) -> None:
-        """Restart job preserving condition_state, action_state, and attempts."""
+        """Restart job preserving condition_state, action_state, and
+        attempts."""
         runtime = job.runtime
         client = self._get_client(job)
 
@@ -619,6 +669,6 @@ def _apply_persistence(
 
 
 def _import_registry() -> None:
-    import monitor.actions  # noqa: F401
-    import monitor.conditions  # noqa: F401
-    import monitor.submission  # noqa: F401
+    from . import actions  # noqa: F401
+    from . import conditions  # noqa: F401
+    from . import submission  # noqa: F401

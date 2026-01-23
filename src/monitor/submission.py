@@ -10,14 +10,14 @@ from compoconf import (
     ConfigInterface,
     register,
 )
-from monitor.conditions import MonitorConditionInterface
-from monitor.actions import JobInterface, LogEventConfig, StateEventConfig
+from .conditions import MonitorConditionInterface
+from .actions import JobInterface, LogEventConfig, StateEventConfig
 
 # Import slurm_gen optionally
 try:
     from slurm_gen import SlurmConfig
 except ImportError:
-    SlurmConfig = Any  # type: ignore
+    SlurmConfig = Any
 
 if TYPE_CHECKING:
     from slurm_gen import SlurmConfig
@@ -27,10 +27,10 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(kw_only=True)
 class BaseJob:
-    log_path: str = field(default=MISSING)  # can be a slurm job name template with %i, %A, %a
-    log_path_current: str | None = (
-        None  #  should be a fixed name known at config time, should contain %a for array index
-    )
+    # can be a slurm job name template with %i, %A, %a
+    log_path: str = field(default=MISSING)
+    # should be a fixed name known at config time, should contain %a for array index
+    log_path_current: str | None = None
     name: str = ""
     log_events: list[LogEventConfig] = field(default_factory=list)
     state_events: list[StateEventConfig] = field(default_factory=list)

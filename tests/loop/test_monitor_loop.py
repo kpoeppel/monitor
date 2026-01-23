@@ -419,13 +419,13 @@ def test_monitor_loop_state_event_action(tmp_path: Path) -> None:
             name="job12",
             command=["echo", "done"],
             log_path=str(tmp_path / "job12_%j.log"),
-                state_events=[
-                    StateEventConfig(
-                        name="running",
-                        transition=(None, "RUNNING"),
-                        action=LogActionConfig(message="done"),
-                    )
-                ],
+            state_events=[
+                StateEventConfig(
+                    name="running",
+                    transition=(None, "RUNNING"),
+                    action=LogActionConfig(message="done"),
+                )
+            ],
         ),
     )
     record.runtime.submitted = True

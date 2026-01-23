@@ -5,6 +5,7 @@ from .local_client import LocalCommandClient
 # Import SlurmClient optionally (requires slurm_gen)
 try:
     from .slurm_client import SlurmClient
+
     _has_slurm = True
 except ImportError:
     SlurmClient = None  # type: ignore

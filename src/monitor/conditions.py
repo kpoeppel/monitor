@@ -21,8 +21,8 @@ from compoconf import (
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from monitor.actions import EventRecord
-from monitor.utils.template import replace_braced_keys
+    from .actions import EventRecord
+from .utils.template import replace_braced_keys
 
 LOGGER = logging.getLogger(__name__)
 

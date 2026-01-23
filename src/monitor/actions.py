@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 import hashlib
 import json
@@ -12,10 +11,16 @@ import re
 import time
 from typing import Any, Literal
 
-from compoconf import ConfigInterface, RegistrableConfigInterface, register, register_interface, MissingValue
+from compoconf import (
+    ConfigInterface,
+    RegistrableConfigInterface,
+    register,
+    register_interface,
+    MissingValue,
+)
 
-from monitor.conditions import MonitorConditionInterface
-from monitor.utils.template import replace_braced_keys
+from .conditions import MonitorConditionInterface
+from .utils.template import replace_braced_keys
 
 LOGGER = logging.getLogger(__name__)
 
@@ -232,8 +237,9 @@ class LogEventConfig(EventConfig):
     """Configuration for a log-triggered event and action."""
 
     pattern: str = ""
-    pattern_type: Literal["substring", "regex"] = "substring"
+    pattern_type: Literal["substring", "regex", "inactivity"] = "substring"
     extract_groups: dict[str, int | str] = field(default_factory=dict)
+    match_once: bool = True
 
 
 @dataclass
@@ -255,11 +261,20 @@ class LogEvent:
         self.config = config
 
     def check_triggers(self, log_text: str) -> list[dict[str, Any]]:
-        """Check if event triggers in the given log text, return metadata for each match."""
+        """Check if event triggers in the given log text, return metadata for
+        each match."""
         triggers = []
-        for match in self._iter_matches(log_text):
-            metadata = self._build_metadata(match, log_text)
-            triggers.append(metadata)
+        if self.config.pattern_type == "inactivity":
+            if log_text == "":
+                metadata = dict(self.config.metadata)
+                metadata["inactive"]
+                triggers.append()
+        else:
+            for match in self._iter_matches(log_text):
+                metadata = self._build_metadata(match, log_text)
+                triggers.append(metadata)
+        if self.config.match_once:
+            triggers = triggers[:1]
         return triggers
 
     def _iter_matches(self, text: str) -> list:

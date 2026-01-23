@@ -8,10 +8,10 @@ This protocol allows monitor to work with different job execution backends:
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from compoconf import RegistrableConfigInterface, register_interface
-from monitor.submission import BaseJob
+from .submission import BaseJob
 
 
 @register_interface
@@ -24,7 +24,8 @@ class JobClientProtocol(Protocol):
     """Protocol for job submission and management.
 
     Any class implementing these methods can be used with MonitorLoop,
-    allowing monitor to work with SLURM, local processes, or other batch systems.
+    allowing monitor to work with SLURM, local processes, or other batch
+    systems.
     """
 
     def submit(

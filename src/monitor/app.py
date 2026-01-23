@@ -9,8 +9,8 @@ from typing import Any
 import yaml
 from compoconf import parse_config
 
-from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop
-from monitor.job_client_protocol import JobClientInterface
+from .loop import JobFileStore, MonitorLoop
+from .job_client_protocol import JobClientInterface
 
 
 @dataclass(kw_only=True)
@@ -81,7 +81,7 @@ def parse_app_config(payload: dict[str, Any]) -> MonitorAppConfig:
 def build_loop(config: MonitorAppConfig) -> MonitorLoop:
     _import_registry()
 
-    # Extract poll interval from monitor config
+    # Extract poll interval from config
     monitor_cfg = config.monitor
     poll_interval = 60.0
     if isinstance(monitor_cfg, dict):
@@ -113,16 +113,16 @@ def build_loop(config: MonitorAppConfig) -> MonitorLoop:
 
 
 def _import_registry() -> None:
-    import monitor.actions  # noqa: F401
-    import monitor.conditions  # noqa: F401
-    import monitor.local_client  # noqa: F401
+    from . import actions  # noqa: F401
+    from . import conditions  # noqa: F401
+    from . import local_client  # noqa: F401
 
     try:  # slurm_gen is optional
-        import monitor.slurm_client  # noqa: F401
+        from . import slurm_client  # noqa: F401
     except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional slurm_gen install
         if exc.name != "slurm_gen":
             raise
-    import monitor.submission  # noqa: F401
+    from . import submission  # noqa: F401
 
 
 __all__ = [

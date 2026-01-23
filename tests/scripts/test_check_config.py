@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import os
 from pathlib import Path
 
 
@@ -13,5 +14,6 @@ def test_check_config_script(tmp_path: Path) -> None:
         check=True,
         capture_output=True,
         text=True,
+        env=os.environ,
     )
     assert result.stdout.strip() == "ok"

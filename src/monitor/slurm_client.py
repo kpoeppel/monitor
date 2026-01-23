@@ -5,25 +5,24 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
-from compoconf import ConfigInterface, RegistrableConfigInterface, parse_config, register, register_interface
-from slurm_gen import SlurmConfig, generate_script, merge_slurm_config
+from compoconf import ConfigInterface, register
+from slurm_gen import generate_script, validate_job_script
 from slurm_gen.client import (
     BaseSlurmClient,
     SlurmClientConfig as SGClientConfig,
 )
 
-from monitor.job_client_protocol import JobClientInterface
-from monitor.submission import SlurmJobConfig
-from monitor.utils.paths import expand_log_path, update_log_symlink
+from .job_client_protocol import JobClientInterface
+from .submission import SlurmJobConfig
+from .utils.paths import expand_log_path, update_log_symlink
 
 LOGGER = logging.getLogger(__name__)
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SlurmClientConfig(ConfigInterface):
-    base_client: BaseSlurmClient.cfgtype = field(default_factory=SGClientConfig())
+    base_client: BaseSlurmClient.cfgtype = field(default_factory=SGClientConfig)
 
 
 @register
@@ -71,6 +70,10 @@ class SlurmClient(JobClientInterface):
             OSError: If process creation fails
         """
         generate_script(job.slurm)
+        validate_job_script(
+            job.slurm.script_path,
+            job.slurm.name,
+        )
         job_id = self._client.submit(job.slurm)
         if job.log_path_current:
             update_log_symlink(expand_log_path(job.log_path, job_id), Path(job.log_path_current))
@@ -84,7 +87,7 @@ class SlurmClient(JobClientInterface):
         """Submit multiple instances of a script.
 
         Each task is submitted as an independent process. The script receives
-        environment variables TASK_ID (0-indexed) and TASK_NAME.
+        environment variables TASK_ID (0-indexed).
 
         Args:
             array_name: Base name for the job array
@@ -95,6 +98,7 @@ class SlurmClient(JobClientInterface):
             List of job_ids for submitted tasks
         """
         generate_script(job.slurm)
+        validate_job_script(job.slurm.script_path, job.slurm.name)
         job_ids = self._client.submit_array(job.slurm, indices)
         if job.log_path_current:
             for job_id in job_ids:

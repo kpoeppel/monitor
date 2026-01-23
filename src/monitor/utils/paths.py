@@ -6,8 +6,8 @@ from pathlib import Path
 
 
 def expand_log_path(log_path: str | Path, job_id: str) -> Path:
-    """
-    Expand SLURM-style tokens in a log path.
+    """Expand SLURM-style tokens in a log path.
+
     Supported tokens:
         %j: Full job ID
         %A: Master job ID (for arrays)
@@ -34,6 +34,8 @@ def update_log_symlink(target: Path, symlink_path: Path) -> None:
     except OSError:  # pragma: no cover
         pass
     try:
+        target = target.absolute()
+        symlink_path = symlink_path.absolute()
         symlink_path.symlink_to(target)
     except OSError:  # pragma: no cover
         pass

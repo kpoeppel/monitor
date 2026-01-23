@@ -18,9 +18,9 @@ import logging
 
 from compoconf import ConfigInterface, register
 
-from monitor.job_client_protocol import JobClientInterface
-from monitor.utils.paths import resolve_log_path, update_log_symlink
-from monitor.submission import LocalJobConfig
+from .job_client_protocol import JobClientInterface
+from .utils.paths import resolve_log_path, update_log_symlink
+from .submission import LocalJobConfig
 
 
 LOGGER = logging.getLogger(__name__)
@@ -272,8 +272,8 @@ class LocalCommandClient(JobClientInterface):
     def cleanup(self) -> None:
         """Clean up all tracked jobs.
 
-        Terminates any running processes and clears job tracking.
-        Useful for graceful shutdown.
+        Terminates any running processes and clears job tracking. Useful
+        for graceful shutdown.
         """
         for job_id in list(self._jobs.keys()):
             self.cancel(job_id)
