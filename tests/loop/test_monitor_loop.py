@@ -7,6 +7,7 @@ from pathlib import Path
 from monitor.actions import (
     FinishActionConfig,
     CancelActionConfig,
+    NewJobActionConfig,
     RestartActionConfig,
     LogActionConfig,
     LogEventConfig,
@@ -14,7 +15,7 @@ from monitor.actions import (
 )
 from monitor.conditions import AlwaysTrueConditionConfig, FileExistsConditionConfig, CooldownConditionConfig
 from monitor.conditions import TimeoutConditionConfig, CompositeConditionConfig
-from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop
+from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop, _normalize_job_definition
 from monitor.submission import LocalJobConfig
 
 
@@ -582,3 +583,265 @@ def test_monitor_loop_start_array_job(tmp_path: Path) -> None:
     assert job0.runtime.submitted is True
     assert job1.runtime.submitted is True
     assert client.submit_array_calls == [[0, 1]]
+
+
+def test_monitor_loop_submission_exception_is_handled(tmp_path: Path) -> None:
+    """If client.submit raises, the job should not be marked as submitted."""
+    class ErrorClient(FakeClient):
+        def submit(self, job):
+            raise RuntimeError("network down")
+
+    store = JobFileStore(tmp_path / "state")
+    client = ErrorClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    record = JobRecordConfig(
+        job_id="err_job",
+        definition=LocalJobConfig(
+            name="err_job",
+            command=["echo", "hi"],
+            log_path=str(tmp_path / "err_%j.log"),
+        ),
+    )
+    store.upsert(record)
+    loop.observe_once()
+
+    loaded = store.load("err_job")
+    assert loaded is not None
+    assert loaded.runtime.submitted is False
+
+
+def test_monitor_loop_log_event_no_action(tmp_path: Path) -> None:
+    """Log event with action=None should not trigger any action."""
+    store = JobFileStore(tmp_path / "state")
+    client = FakeClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    log_current = tmp_path / "noact_latest.log"
+    record = JobRecordConfig(
+        job_id="noact",
+        definition=LocalJobConfig(
+            name="noact",
+            command=["echo", "hi"],
+            log_path=str(tmp_path / "noact_%j.log"),
+            log_path_current=str(log_current),
+            log_events=[
+                LogEventConfig(name="evt", pattern="TRIGGER", action=None),
+            ],
+        ),
+    )
+    record.runtime.submitted = True
+    record.runtime.runtime_job_id = "noact-1"
+    client._statuses["noact-1"] = "RUNNING"
+    store.upsert(record)
+
+    _write_log(log_current, "TRIGGER\n")
+    loop.observe_once()
+
+    loaded = store.load("noact")
+    assert loaded is not None
+    assert loaded.runtime.action_state == {}
+
+
+def test_monitor_loop_state_event_no_action(tmp_path: Path) -> None:
+    """State event with action=None should not execute any action."""
+    store = JobFileStore(tmp_path / "state")
+    client = FakeClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    record = JobRecordConfig(
+        job_id="stnoact",
+        definition=LocalJobConfig(
+            name="stnoact",
+            command=["echo", "hi"],
+            log_path=str(tmp_path / "stnoact_%j.log"),
+            state_events=[
+                StateEventConfig(name="started", transition=(None, "RUNNING"), action=None),
+            ],
+        ),
+    )
+    record.runtime.submitted = True
+    record.runtime.runtime_job_id = "stnoact-1"
+    record.runtime.last_status = None
+    client._statuses["stnoact-1"] = "RUNNING"
+    store.upsert(record)
+
+    loop.observe_once()
+
+    loaded = store.load("stnoact")
+    assert loaded is not None
+    assert loaded.runtime.action_state == {}
+
+
+def _append_log(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(text)
+
+
+def test_monitor_loop_persistent_pass(tmp_path: Path) -> None:
+    """Once a persistent_pass condition passes, subsequent failures still return pass."""
+    store = JobFileStore(tmp_path / "state")
+    client = FakeClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    gate = tmp_path / "gate.flag"
+    log_current = tmp_path / "ppass_latest.log"
+    record = JobRecordConfig(
+        job_id="ppass",
+        definition=LocalJobConfig(
+            name="ppass",
+            command=["echo", "hi"],
+            log_path=str(tmp_path / "ppass_%j.log"),
+            log_path_current=str(log_current),
+            log_events=[
+                LogEventConfig(
+                    name="gate",
+                    pattern="GATE",
+                    action=LogActionConfig(message="gated"),
+                    condition=FileExistsConditionConfig(path=str(gate), persistent_pass=True),
+                ),
+            ],
+        ),
+    )
+    record.runtime.submitted = True
+    record.runtime.runtime_job_id = "ppass-1"
+    client._statuses["ppass-1"] = "RUNNING"
+    store.upsert(record)
+
+    # First observe: gate file absent → condition fails, action not executed
+    _append_log(log_current, "GATE\n")
+    loop.observe_once()
+    loaded = store.load("ppass")
+    assert loaded is not None
+    cond_state = loaded.runtime.action_state.get("log:gate:0", {}).get("condition", {})
+    assert not cond_state.get("latched_pass")  # not yet latched
+
+    # Create file and observe (append new GATE line): condition passes → latched_pass set
+    gate.write_text("open")
+    _append_log(log_current, "GATE\n")
+    loop.observe_once()
+    loaded = store.load("ppass")
+    cond_state = loaded.runtime.action_state.get("log:gate:0", {}).get("condition", {})
+    assert cond_state.get("latched_pass") is True
+
+    # Remove file; latch means condition still returns pass on next trigger
+    gate.unlink()
+    _append_log(log_current, "GATE\n")
+    loop.observe_once()
+    loaded = store.load("ppass")
+    cond_state = loaded.runtime.action_state.get("log:gate:0", {}).get("condition", {})
+    assert cond_state.get("latched_pass") is True  # still latched after gate removed
+
+
+def test_monitor_loop_unsubmitted_job_cancel(tmp_path: Path) -> None:
+    """An unsubmitted job with a passing cancel_condition should be cancelled."""
+    store = JobFileStore(tmp_path / "state")
+    client = FakeClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    record = JobRecordConfig(
+        job_id="precancel",
+        definition=LocalJobConfig(
+            name="precancel",
+            command=["echo", "hi"],
+            log_path=str(tmp_path / "precancel_%j.log"),
+            cancel_condition=AlwaysTrueConditionConfig(),
+        ),
+    )
+    store.upsert(record)
+
+    loop.observe_once()
+
+    loaded = store.load("precancel", include_finished=True)
+    assert loaded is not None
+    assert loaded.runtime.final_state == "cancelled"
+    assert not client.submit_calls  # never submitted
+
+
+def test_monitor_loop_unsubmitted_job_finish(tmp_path: Path) -> None:
+    """An unsubmitted job with a passing finish_condition should be finished."""
+    store = JobFileStore(tmp_path / "state")
+    client = FakeClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    record = JobRecordConfig(
+        job_id="prefinish",
+        definition=LocalJobConfig(
+            name="prefinish",
+            command=["echo", "hi"],
+            log_path=str(tmp_path / "prefinish_%j.log"),
+            finish_condition=AlwaysTrueConditionConfig(),
+        ),
+    )
+    store.upsert(record)
+
+    loop.observe_once()
+
+    loaded = store.load("prefinish", include_finished=True)
+    assert loaded is not None
+    assert loaded.runtime.final_state == "finished"
+    assert not client.submit_calls
+
+
+def test_normalize_job_definition_dict_events(tmp_path: Path) -> None:
+    """_normalize_job_definition should parse dict log/state events into typed configs."""
+    record = JobRecordConfig(
+        job_id="norm",
+        definition=LocalJobConfig(
+            name="norm",
+            command=["echo", "hi"],
+            log_path=str(tmp_path / "norm_%j.log"),
+        ),
+    )
+    # Inject dict-form events (as would come from JSON deserialization)
+    record.definition.log_events = [
+        {"name": "evt", "pattern": "HIT", "action": {"class_name": "LogAction", "message": "hit"}},
+    ]
+    record.definition.state_events = [
+        {"name": "started", "transition": [None, "RUNNING"], "action": {"class_name": "LogAction", "message": "started"}},
+    ]
+    _normalize_job_definition(record)
+    assert isinstance(record.definition.log_events[0], LogEventConfig)
+    assert isinstance(record.definition.state_events[0], StateEventConfig)
+
+
+def test_monitor_loop_new_job_action_submits_job(tmp_path: Path) -> None:
+    """NewJobAction in a log event should cause a new job to be submitted."""
+    store = JobFileStore(tmp_path / "state")
+    client = FakeClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    new_job_cfg = LocalJobConfig(
+        name="spawned",
+        command=["echo", "spawned"],
+        log_path=str(tmp_path / "spawned_%j.log"),
+    )
+    log_current = tmp_path / "parent_latest.log"
+    record = JobRecordConfig(
+        job_id="parent",
+        definition=LocalJobConfig(
+            name="parent",
+            command=["echo", "parent"],
+            log_path=str(tmp_path / "parent_%j.log"),
+            log_path_current=str(log_current),
+            log_events=[
+                LogEventConfig(
+                    name="spawn",
+                    pattern="SPAWN",
+                    action=NewJobActionConfig(job_config=new_job_cfg),
+                ),
+            ],
+        ),
+    )
+    record.runtime.submitted = True
+    record.runtime.runtime_job_id = "parent-1"
+    client._statuses["parent-1"] = "RUNNING"
+    store.upsert(record)
+
+    _write_log(log_current, "SPAWN\n")
+    loop.observe_once()
+
+    # The spawned job should have been submitted (2 total: parent was submitted before,
+    # FakeClient.submit is called for the new job)
+    assert len(client.submit_calls) == 1  # 1 call for spawned job
