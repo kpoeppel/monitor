@@ -12,10 +12,9 @@ if str(SRC) not in sys.path:
 if SLURM_GEN_SRC.exists() and str(SLURM_GEN_SRC) not in sys.path:
     sys.path.insert(0, str(SLURM_GEN_SRC))
 
+# Imported for its side effect, not its names: monitor.submission runs @register
+# on the job configs, so they exist in the registry before tests are collected.
 try:
-    from monitor.submission import LocalJobConfig, SlurmJobConfig
-
-    # LocalJobConfig.job_kind = "local"
-    # SlurmJobConfig.job_kind = "slurm"
+    from monitor.submission import LocalJobConfig, SlurmJobConfig  # noqa: F401
 except ModuleNotFoundError:
     pass

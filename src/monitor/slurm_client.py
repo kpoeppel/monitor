@@ -6,7 +6,8 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from compoconf import ConfigInterface, register
+import yaml
+from compoconf import ConfigInterface, register, asdict
 from slurm_gen import generate_script, validate_job_script
 from slurm_gen.client import (
     BaseSlurmClient,
@@ -15,7 +16,7 @@ from slurm_gen.client import (
 
 from .job_client_protocol import JobClientInterface
 from .submission import SlurmJobConfig
-from .utils.paths import expand_log_path, update_log_symlink
+from .utils.paths import expand_log_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -74,9 +75,25 @@ class SlurmClient(JobClientInterface):
             job.slurm.script_path,
             job.slurm.name,
         )
+        # Nobody creates the log directory for a job name that has never run:
+        # sbatch does NOT create the --output directory (the job dies at launch
+        # with "Unable to open file"), and the config dump below would raise
+        # FileNotFoundError. The %j placeholder only ever sits in the FILENAME,
+        # so the parent directory is already final here.
+        for path in (job.log_path, job.config_path):
+            if path:
+                Path(path).parent.mkdir(parents=True, exist_ok=True)
         job_id = self._client.submit(job.slurm)
-        if job.log_path_current:
-            update_log_symlink(expand_log_path(job.log_path, job_id), Path(job.log_path_current))
+        LOGGER.info(f"Submitted job ({job_id}): {job.slurm.name}")
+        # The current.* symlinks are (re)pointed by the monitor when the job goes
+        # RUNNING (see MonitorLoop._update_current_symlinks), so a shared symlink
+        # in a dependency chain tracks the running job rather than the last
+        # submitted one. We only write the per-job config file here.
+        if job.config_path:
+            config_path = expand_log_path(job.config_path, job_id=job_id)
+            LOGGER.info(f"Logging Config to: {config_path}")
+            with open(config_path, "w") as fp:
+                yaml.dump(asdict(job.base_config), fp)
         return job_id
 
     def submit_array(
@@ -100,12 +117,8 @@ class SlurmClient(JobClientInterface):
         generate_script(job.slurm)
         validate_job_script(job.slurm.script_path, job.slurm.name)
         job_ids = self._client.submit_array(job.slurm, indices)
-        if job.log_path_current:
-            for job_id in job_ids:
-                update_log_symlink(
-                    expand_log_path(job.log_path, job_id),
-                    Path(job.log_path_current.replace("%a", job_id.split("_")[-1])),
-                )
+        # current.* symlinks are (re)pointed by the monitor on the RUNNING
+        # transition (see MonitorLoop._update_current_symlinks).
         return job_ids
 
     def cancel(self, job_id: str) -> None:
@@ -134,6 +147,36 @@ class SlurmClient(JobClientInterface):
             Statuses: "RUNNING", "COMPLETED", "FAILED", "CANCELLED"
         """
         return self._client.squeue()
+
+    def register_job(
+        self,
+        job: SlurmJobConfig,
+        job_id: str,
+        state: str | None = None,
+    ) -> None:
+        """Adopt an already-submitted SLURM job into the underlying client.
+
+        The base client only learns about a job through ``submit()``, and its
+        ``squeue()`` short-circuits to ``{}`` while nothing is tracked. A monitor
+        that re-attaches to a session therefore has to re-register the jobs by
+        hand or it stays blind to SLURM for its whole lifetime.
+
+        Args:
+            job: Stored job definition (carries the SlurmConfig).
+            job_id: SLURM job id, e.g. ``1524558`` or ``1524558_3``.
+            state: Last known state; PENDING is only the placeholder until the
+                next squeue overwrites it.
+        """
+        self._client.register_job(job_id, job.slurm, state=state or "PENDING")
+
+    def update_excludes(self, job_id: str, nodelist: str) -> None:
+        """Update a pending job's excluded-node list (delegates to ``scontrol``).
+
+        Args:
+            job_id: SLURM job id of a pending job to edit.
+            nodelist: Full comma-separated node list to set as ExcNodeList.
+        """
+        return self._client.update_excludes(job_id, nodelist)
 
 
 __all__ = ["BaseSlurmClient", "SlurmClient", "SlurmClientConfig"]

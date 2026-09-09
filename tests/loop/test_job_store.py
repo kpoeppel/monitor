@@ -30,7 +30,8 @@ def test_job_store_finished_filtering(tmp_path: Path) -> None:
 
 
 def test_job_store_load_corrupt_json(tmp_path: Path) -> None:
-    """Corrupt JSON files should be silently skipped in load_all and return None in load."""
+    """Corrupt JSON files should be silently skipped in load_all and return None in
+    load."""
     store = JobFileStore(tmp_path / "state")
     corrupt = store.root / "bad.job.json"
     corrupt.write_text("not valid json", encoding="utf-8")

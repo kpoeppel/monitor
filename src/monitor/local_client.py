@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Literal
 import logging
 
-from compoconf import ConfigInterface, register
+import yaml
+from compoconf import ConfigInterface, register, asdict
 
 from .job_client_protocol import JobClientInterface
 from .utils.paths import resolve_log_path, update_log_symlink
@@ -96,6 +97,17 @@ class LocalCommandClient(JobClientInterface):
         if job.log_to_file:
             timestamp = int(time.time())
             resolved_log_path = resolve_log_path(job.log_path, job_id=job_id, timestamp=timestamp)
+            if job.config_path:
+                resolved_config_path = resolve_log_path(
+                    job.config_path, job_id=job_id, timestamp=timestamp
+                )
+                LOGGER.info(f"Logging Config to: {resolved_config_path}")
+                Path(resolved_config_path).parent.mkdir(parents=True, exist_ok=True)
+                with open(resolved_config_path, "w") as fp:
+                    yaml.dump(asdict(job.base_config), fp)
+                if job.config_path_current:
+                    config_path_obj = Path(resolved_config_path)
+                    update_log_symlink(config_path_obj, Path(job.config_path_current))
             log_path_obj = Path(resolved_log_path)
             log_path_obj.parent.mkdir(parents=True, exist_ok=True)
             log_file = open(log_path_obj, "w")
@@ -165,13 +177,17 @@ class LocalCommandClient(JobClientInterface):
             stdout_target = subprocess.DEVNULL
             if job.log_to_file is None or job.log_to_file:
                 timestamp = int(time.time())
-                resolved_log_path = resolve_log_path(job.log_path, job_id=job_id, timestamp=timestamp)
+                resolved_log_path = resolve_log_path(
+                    job.log_path, job_id=job_id, timestamp=timestamp
+                )
                 log_path_obj = Path(resolved_log_path)
                 log_path_obj.parent.mkdir(parents=True, exist_ok=True)
                 log_file = open(log_path_obj, "w")
                 stdout_target = log_file
                 if job.log_path_current:
-                    update_log_symlink(log_path_obj, Path(job.log_path_current.replace("%a", str(task_idx))))
+                    update_log_symlink(
+                        log_path_obj, Path(job.log_path_current.replace("%a", str(task_idx)))
+                    )
             try:
                 proc = subprocess.Popen(
                     [*job.command, *(job.extra_args or []), *job.array_args[task_idx]],
@@ -228,6 +244,28 @@ class LocalCommandClient(JobClientInterface):
         """
         self._jobs.pop(job_id, None)
 
+    def register_job(
+        self,
+        job: LocalJobConfig,
+        job_id: str,
+        state: str | None = None,
+    ) -> None:
+        """Not supported for local jobs -- deliberately a no-op.
+
+        Adoption needs a handle on the running process, and this backend has
+        none to re-acquire: ``LocalJobState`` keeps a ``Popen`` that died with
+        the previous monitor, and ``job_id`` is an incrementing counter rather
+        than a pid, so there is nothing to poll. Registering the job anyway
+        would be worse than skipping it -- its stored state would be reported
+        forever and the job could never be seen to finish.
+        """
+        LOGGER.warning(
+            "Cannot re-adopt local job %s (%s): the process handle did not survive "
+            "the previous monitor. It will not be tracked; SLURM jobs are unaffected.",
+            job_id,
+            getattr(job, "name", "?"),
+        )
+
     def squeue(self) -> dict[str, str]:
         """Get current status of all tracked jobs.
 
@@ -272,8 +310,8 @@ class LocalCommandClient(JobClientInterface):
     def cleanup(self) -> None:
         """Clean up all tracked jobs.
 
-        Terminates any running processes and clears job tracking. Useful
-        for graceful shutdown.
+        Terminates any running processes and clears job tracking. Useful for graceful
+        shutdown.
         """
         for job_id in list(self._jobs.keys()):
             self.cancel(job_id)

@@ -23,9 +23,8 @@ class JobClientInterface(RegistrableConfigInterface):
 class JobClientProtocol(Protocol):
     """Protocol for job submission and management.
 
-    Any class implementing these methods can be used with MonitorLoop,
-    allowing monitor to work with SLURM, local processes, or other batch
-    systems.
+    Any class implementing these methods can be used with MonitorLoop, allowing monitor
+    to work with SLURM, local processes, or other batch systems.
     """
 
     def submit(
@@ -96,6 +95,38 @@ class JobClientProtocol(Protocol):
         Returns:
             Dictionary mapping job_id -> status string
             Common statuses: "PENDING", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"
+        """
+        ...
+
+    def register_job(
+        self,
+        job: BaseJob,
+        job_id: str,
+        state: str | None = None,
+    ) -> None:  # pragma: no cover
+        """Adopt an already-submitted job into this client's tracking.
+
+        Called when a monitor re-attaches to a session it did not submit (see
+        ``MonitorLoop.rehydrate``). Backends that cannot adopt a foreign job
+        (local processes: the Popen handle died with the previous monitor) may
+        make this a no-op.
+
+        Args:
+            job: The job definition, as stored in the session state.
+            job_id: The backend's own id for the running job.
+            state: Last known status, if any, else the backend's default.
+        """
+        ...
+
+    def update_excludes(self, job_id: str, nodelist: str) -> None:  # pragma: no cover
+        """Update a pending job's excluded-node list.
+
+        Backends without a notion of node exclusion (e.g. local processes) may
+        leave this unimplemented; it is only invoked for SLURM jobs.
+
+        Args:
+            job_id: Job identifier returned by submit().
+            nodelist: Full node list to set as the job's exclusion list.
         """
         ...
 

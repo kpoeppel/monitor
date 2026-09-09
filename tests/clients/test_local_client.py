@@ -80,13 +80,13 @@ def test_local_client_log_to_file_false(tmp_path: Path) -> None:
 
 
 def test_local_client_cancel_nonexistent() -> None:
-    """cancel() on unknown job ID should not raise."""
+    """Cancel() on unknown job ID should not raise."""
     client = LocalCommandClient()
     client.cancel("nonexistent-job-id")  # should be a no-op
 
 
 def test_local_client_remove_nonexistent() -> None:
-    """remove() on unknown job ID should not raise."""
+    """Remove() on unknown job ID should not raise."""
     client = LocalCommandClient()
     client.remove("nonexistent-job-id")  # should be a no-op
 
@@ -108,7 +108,7 @@ def test_local_client_failed_status(tmp_path: Path) -> None:
 
 
 def test_local_client_cleanup(tmp_path: Path) -> None:
-    """cleanup() cancels and removes all tracked jobs."""
+    """Cleanup() cancels and removes all tracked jobs."""
     client = LocalCommandClient()
     log_path = tmp_path / "sleep_%t.log"
     job_id = client.submit(
@@ -149,3 +149,45 @@ def test_local_client_submit_array(tmp_path: Path) -> None:
         assert target.exists()
         contents = target.read_text(encoding="utf-8")
         assert f"task:{idx}" in contents
+
+
+def test_local_client_dumps_the_resolved_config(tmp_path: Path) -> None:
+    """``config_path`` records what a job was actually submitted with."""
+    import yaml
+
+    client = LocalCommandClient()
+    job_id = client.submit(
+        LocalJobConfig(
+            name="job",
+            command=["bash", "-c", "true"],
+            log_path=str(tmp_path / "job_%j.log"),
+            config_path=str(tmp_path / "cfg" / "job_%j.yaml"),
+            config_path_current=str(tmp_path / "cfg" / "current.yaml"),
+            base_config={"stage": "stable", "lr": 0.001},
+        )
+    )
+
+    dumped = tmp_path / "cfg" / f"job_{job_id}.yaml"
+    assert yaml.safe_load(dumped.read_text()) == {"stage": "stable", "lr": 0.001}
+    current = tmp_path / "cfg" / "current.yaml"
+    assert current.is_symlink()
+    assert current.resolve() == dumped.resolve()
+
+
+def test_local_client_register_job_is_a_no_op_that_warns(tmp_path: Path, caplog) -> None:
+    """A local process cannot be re-adopted: its Popen died with the monitor.
+
+    Registering it anyway would be worse than skipping it -- the stored state
+    would be reported forever and the job could never be seen to finish.
+    """
+    import logging
+
+    client = LocalCommandClient()
+    job = LocalJobConfig(name="orphan", command=["true"], log_path=str(tmp_path / "j.log"))
+
+    with caplog.at_level(logging.WARNING, logger="monitor.local_client"):
+        client.register_job(job, "17", state="RUNNING")
+
+    assert client.squeue() == {}
+    assert "Cannot re-adopt local job 17" in caplog.text
+    assert "orphan" in caplog.text

@@ -7,20 +7,30 @@ name = "monitor"
 version = "0.1.0"
 description = "Job monitoring and state management"
 readme = "README.md"
-requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
 dependencies = [
-    "compoconf",
+    # 0.2.5 is the floor, not a preference: earlier releases cannot resolve an
+    # `Interface.cfgtype` annotation on Python 3.10 (typing._type_check rejects
+    # the lazy union proxy as "not callable"), and this package annotates job
+    # and condition fields that way throughout.
+    "compoconf>=0.2.5",
     "pyyaml",
 ]
 
 [project.optional-dependencies]
 slurm = [
-    "slurm_gen",
+    # Not published to PyPI; installed straight from its repository.
+    "slurm_gen @ git+https://github.com/kpoeppel/slurm_gen.git@main",
 ]
 dev = [
     "pytest",
+    "pytest-cov",
     "ruff",
-    "slurm_gen",  # Needed for tests
+    # slurm_gen is needed for the SLURM tests but is not on PyPI, so it is not
+    # listed here: a bare name would make `pip install -e .[dev]` fail. Install
+    # it from the `slurm` extra, or work from a sibling checkout (tests/conftest.py
+    # puts ../slurm_gen/src on sys.path).
 ]
 
 [tool.setuptools.packages.find]
@@ -29,3 +39,14 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=monitor --cov-report=term-missing"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+ignore = ["E203"]
+
+[tool.docformatter]
+wrap-summaries = 88
+wrap-descriptions = 88

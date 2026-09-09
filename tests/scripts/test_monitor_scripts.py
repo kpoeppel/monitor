@@ -15,8 +15,7 @@ _SLURM_GEN_SRC = _MONITOR_ROOT.parent / "slurm_gen" / "src"
 _ENV = {
     **os.environ,
     "PYTHONPATH": os.pathsep.join(
-        [str(_MONITOR_ROOT / "src")]
-        + ([str(_SLURM_GEN_SRC)] if _SLURM_GEN_SRC.exists() else [])
+        [str(_MONITOR_ROOT / "src")] + ([str(_SLURM_GEN_SRC)] if _SLURM_GEN_SRC.exists() else [])
     ),
 }
 
@@ -38,7 +37,15 @@ def test_monitor_control_submit_and_cancel(tmp_path: Path) -> None:
 
     script = _SCRIPTS_DIR / "monitor_control.py"
     subprocess.run(
-        [sys.executable, str(script), "--state-dir", str(state_dir), "submit", "--job-json", str(job_json)],
+        [
+            sys.executable,
+            str(script),
+            "--state-dir",
+            str(state_dir),
+            "submit",
+            "--job-json",
+            str(job_json),
+        ],
         check=True,
         env=_ENV,
     )

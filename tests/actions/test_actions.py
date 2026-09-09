@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 from slurm_gen import SlurmConfig
@@ -20,6 +19,8 @@ from monitor.actions import (
     EventRecord,
     LogEvent,
     LogEventConfig,
+    RunCommandAction,
+    RunCommandActionConfig,
 )
 from monitor.submission import LocalJobConfig, SlurmJobConfig
 
@@ -61,7 +62,9 @@ def test_finish_action() -> None:
 
 
 def test_new_job_action_with_local_config() -> None:
-    job_config = LocalJobConfig(name="new_job", command=["echo", "hello"], log_path="/tmp/new_job.log")
+    job_config = LocalJobConfig(
+        name="new_job", command=["echo", "hello"], log_path="/tmp/new_job.log"
+    )
     action = NewJobAction(NewJobActionConfig(job_config=job_config))
     result = action.execute(_context())
     assert result.status == "success"
@@ -110,6 +113,7 @@ def test_action_context_variables_includes_workspace(tmp_path: Path) -> None:
 
 def test_log_action_debug_level(caplog) -> None:
     import logging
+
     action = LogAction(LogActionConfig(message="debug msg", level="debug"))
     with caplog.at_level(logging.DEBUG):
         result = action.execute(_context())
@@ -119,6 +123,7 @@ def test_log_action_debug_level(caplog) -> None:
 
 def test_log_action_warning_level(caplog) -> None:
     import logging
+
     action = LogAction(LogActionConfig(message="warn msg", level="warning"))
     with caplog.at_level(logging.WARNING):
         result = action.execute(_context())
@@ -128,6 +133,7 @@ def test_log_action_warning_level(caplog) -> None:
 
 def test_log_action_error_level(caplog) -> None:
     import logging
+
     action = LogAction(LogActionConfig(message="err msg", level="error"))
     with caplog.at_level(logging.ERROR):
         result = action.execute(_context())
@@ -136,7 +142,9 @@ def test_log_action_error_level(caplog) -> None:
 
 
 def test_log_event_regex_pattern() -> None:
-    event = LogEvent(LogEventConfig(name="e", pattern=r"step=(\d+)", pattern_type="regex", match_once=False))
+    event = LogEvent(
+        LogEventConfig(name="e", pattern=r"step=(\d+)", pattern_type="regex", match_once=False)
+    )
     triggers = event.check_triggers("step=42 done\nstep=100 ok")
     assert len(triggers) == 2
     assert triggers[0]["match"] == "step=42"
@@ -144,12 +152,14 @@ def test_log_event_regex_pattern() -> None:
 
 
 def test_log_event_extract_groups_by_index() -> None:
-    event = LogEvent(LogEventConfig(
-        name="e",
-        pattern=r"epoch=(\d+)",
-        pattern_type="regex",
-        extract_groups={"epoch": 1, "full": "match"},
-    ))
+    event = LogEvent(
+        LogEventConfig(
+            name="e",
+            pattern=r"epoch=(\d+)",
+            pattern_type="regex",
+            extract_groups={"epoch": 1, "full": "match"},
+        )
+    )
     triggers = event.check_triggers("epoch=7")
     assert len(triggers) == 1
     assert triggers[0]["epoch"] == "7"
@@ -158,13 +168,73 @@ def test_log_event_extract_groups_by_index() -> None:
 
 def test_log_event_extract_groups_missing_group() -> None:
     # Group 2 doesn't exist — should be silently skipped
-    event = LogEvent(LogEventConfig(
-        name="e",
-        pattern=r"val=(\d+)",
-        pattern_type="regex",
-        extract_groups={"v": 1, "missing": 99},
-    ))
+    event = LogEvent(
+        LogEventConfig(
+            name="e",
+            pattern=r"val=(\d+)",
+            pattern_type="regex",
+            extract_groups={"v": 1, "missing": 99},
+        )
+    )
     triggers = event.check_triggers("val=5")
     assert len(triggers) == 1
     assert triggers[0]["v"] == "5"
     assert "missing" not in triggers[0]
+
+
+class TestRunCommandAction:
+    """A side effect of a log/state event; never terminal."""
+
+    def test_runs_the_templated_command(self, tmp_path):
+        out = tmp_path / "out.txt"
+        action = RunCommandAction(
+            RunCommandActionConfig(command=f"echo {{node}} > {out}", timeout_s=30)
+        )
+        event = EventRecord(event_id="e", name="n", source="log", payload={"node": "node-01"})
+
+        result = action.execute(ActionContext(event=event, job_metadata={}))
+
+        assert result.status == "success"
+        assert result.metadata["returncode"] == 0
+        assert out.read_text().strip() == "node-01"
+
+    def test_empty_command_is_a_failure_not_a_crash(self):
+        action = RunCommandAction(RunCommandActionConfig(command="   "))
+        event = EventRecord(event_id="e", name="n", source="log")
+
+        result = action.execute(ActionContext(event=event, job_metadata={}))
+
+        assert result.status == "failed"
+        assert result.message == "empty command"
+
+    def test_nonzero_exit_is_reported_as_failed(self):
+        action = RunCommandAction(RunCommandActionConfig(command="exit 3", timeout_s=30))
+        event = EventRecord(event_id="e", name="n", source="log")
+
+        result = action.execute(ActionContext(event=event, job_metadata={}))
+
+        assert result.status == "failed"
+        assert result.metadata["returncode"] == 3
+
+    def test_timeout_is_reported_not_raised(self):
+        """A hook that hangs must not wedge the poll it fires from."""
+        action = RunCommandAction(RunCommandActionConfig(command="sleep 5", timeout_s=0.05))
+        event = EventRecord(event_id="e", name="n", source="log")
+
+        result = action.execute(ActionContext(event=event, job_metadata={}))
+
+        assert result.status == "failed"
+        assert "timed out" in result.message
+
+    def test_runs_in_the_configured_directory(self, tmp_path):
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        out = tmp_path / "pwd.txt"
+        action = RunCommandAction(
+            RunCommandActionConfig(command=f"pwd > {out}", cwd=str(workdir), timeout_s=30)
+        )
+        event = EventRecord(event_id="e", name="n", source="log")
+
+        action.execute(ActionContext(event=event, job_metadata={}))
+
+        assert out.read_text().strip() == str(workdir)
