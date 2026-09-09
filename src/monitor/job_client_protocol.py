@@ -23,9 +23,8 @@ class JobClientInterface(RegistrableConfigInterface):
 class JobClientProtocol(Protocol):
     """Protocol for job submission and management.
 
-    Any class implementing these methods can be used with MonitorLoop,
-    allowing monitor to work with SLURM, local processes, or other batch
-    systems.
+    Any class implementing these methods can be used with MonitorLoop, allowing monitor
+    to work with SLURM, local processes, or other batch systems.
     """
 
     def submit(

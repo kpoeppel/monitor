@@ -170,8 +170,7 @@ class SlurmClient(JobClientInterface):
         self._client.register_job(job_id, job.slurm, state=state or "PENDING")
 
     def update_excludes(self, job_id: str, nodelist: str) -> None:
-        """Update a pending job's excluded-node list (delegates to
-        ``scontrol``).
+        """Update a pending job's excluded-node list (delegates to ``scontrol``).
 
         Args:
             job_id: SLURM job id of a pending job to edit.

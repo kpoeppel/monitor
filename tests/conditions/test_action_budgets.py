@@ -57,9 +57,8 @@ def test_max_action_fires_truth_table(fires, limit, expected):
 def test_missing_counter_passes_so_non_event_conditions_do_not_hard_fail():
     """Start/cancel/finish conditions carry no action, hence no counter.
 
-    Fail-open matches CooldownCondition's behaviour when there is no
-    event, and keeps a misplaced budget from silently blocking a job's
-    start condition.
+    Fail-open matches CooldownCondition's behaviour when there is no event, and keeps a
+    misplaced budget from silently blocking a job's start condition.
     """
     cond = MaxActionFiresCondition(MaxActionFiresConditionConfig(max_fires=1))
     assert bool(cond.check(ConditionContext())) is True
@@ -68,9 +67,9 @@ def test_missing_counter_passes_so_non_event_conditions_do_not_hard_fail():
 def test_the_two_budget_conditions_read_different_counters():
     """The regression this whole condition exists to prevent.
 
-    Same situation — an event that has never fired, on a job that has
-    already restarted 5 times for unrelated reasons. MaxAttempts is
-    spent; MaxActionFires still has its full budget.
+    Same situation — an event that has never fired, on a job that has already restarted
+    5 times for unrelated reasons. MaxAttempts is spent; MaxActionFires still has its
+    full budget.
     """
     ctx = ConditionContext(attempts=5, extra={"action_fires": 0})
     assert (
@@ -98,9 +97,8 @@ def client():
 def _make_job(tmp_path: Path, *, strict_budget: int, benign_budget: int):
     """A local job with two restart events on DIFFERENT budgets.
 
-    The job writes nothing itself; the test drives the log so exactly
-    one marker is visible per poll and it is unambiguous which event
-    fired.
+    The job writes nothing itself; the test drives the log so exactly one marker is
+    visible per poll and it is unambiguous which event fired.
     """
     log_path = tmp_path / "train.log"
     log_path.write_text("", encoding="utf-8")
@@ -125,7 +123,9 @@ def _make_job(tmp_path: Path, *, strict_budget: int, benign_budget: int):
             ),
         ],
     )
-    return JobRecordConfig(job_id="job", definition=definition, runtime=JobRuntimeConfig()), log_path
+    return JobRecordConfig(
+        job_id="job", definition=definition, runtime=JobRuntimeConfig()
+    ), log_path
 
 
 def _reload(store: JobFileStore) -> JobRecordConfig:
@@ -140,13 +140,12 @@ def _fires(job: JobRecordConfig, action_id: str) -> int:
 def _cycle(monitor, store, log_path, marker) -> JobRecordConfig:
     """One poll with `marker` newly visible in the log.
 
-    APPENDS rather than overwrites, which is what a real log does and
-    what the cursor arithmetic requires. On a poll that restarts, the
-    client truncates the file and the loop resets log_cursor to 0, so
-    append still leaves exactly one unread marker. On a poll that does
-    NOT restart (a spent budget), the cursor stays at end-of-file —
-    overwriting there would leave the cursor past the new content and
-    the next marker would be silently invisible.
+    APPENDS rather than overwrites, which is what a real log does and what the cursor
+    arithmetic requires. On a poll that restarts, the client truncates the file and the
+    loop resets log_cursor to 0, so append still leaves exactly one unread marker. On a
+    poll that does NOT restart (a spent budget), the cursor stays at end-of-file —
+    overwriting there would leave the cursor past the new content and the next marker
+    would be silently invisible.
     """
     with log_path.open("a", encoding="utf-8") as fh:
         fh.write(f"{marker}\n")
@@ -193,11 +192,9 @@ def test_budgets_are_independent_per_event(tmp_path, client):
 
 
 def test_fire_count_survives_restarts(tmp_path, client):
-    """The budget is only meaningful if it is not reset by the restart it
-    causes.
+    """The budget is only meaningful if it is not reset by the restart it causes.
 
-    _restart_job deliberately preserves action_state; this pins that
-    contract.
+    _restart_job deliberately preserves action_state; this pins that contract.
     """
     store = JobFileStore(tmp_path / "state")
     record, log_path = _make_job(tmp_path, strict_budget=3, benign_budget=3)
@@ -248,12 +245,13 @@ def _make_shadowed_job(tmp_path: Path, *, budgeted_limit: int):
             ),
         ],
     )
-    return JobRecordConfig(job_id="job", definition=definition, runtime=JobRuntimeConfig()), log_path
+    return JobRecordConfig(
+        job_id="job", definition=definition, runtime=JobRuntimeConfig()
+    ), log_path
 
 
 def test_an_unbudgeted_catchall_below_defeats_a_budget_above(tmp_path, client):
-    """A budget only bounds the run if EVERY event that matches the same log is
-    bounded.
+    """A budget only bounds the run if EVERY event that matches the same log is bounded.
 
     Capping err_gloo_mesh while err_child_failed / `error` stay unbudgeted does
     nothing: the same log line falls through to the next matching event and

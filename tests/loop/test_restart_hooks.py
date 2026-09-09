@@ -30,7 +30,9 @@ def test_run_command_action_renders_and_runs(tmp_path):
     out = tmp_path / "out.txt"
     cfg = RunCommandActionConfig(command=f"echo node={{node}} job={{job_id}} > {out}")
     event = EventRecord(event_id="e", name="n", source="log", payload={"node": "jpbo-001-01"})
-    result = RunCommandAction(cfg).execute(ActionContext(event=event, job_metadata={"job_id": "j1"}))
+    result = RunCommandAction(cfg).execute(
+        ActionContext(event=event, job_metadata={"job_id": "j1"})
+    )
     assert result.status == "success"
     assert out.read_text().strip() == "node=jpbo-001-01 job=j1"
 
@@ -48,8 +50,18 @@ def test_run_restart_hooks_runs_pre_command_and_refreshes_excludes(tmp_path):
         }
     }
     sbatch = SimpleNamespace(exclude="jpbo-001-01")
-    definition = SimpleNamespace(metadata={}, name="jobname", class_name="SlurmJobConfig", slurm=SimpleNamespace(sbatch=sbatch), log_path=str(tmp_path / "slurm-%j.log"))
-    job = SimpleNamespace(job_id="job-a", definition=definition, runtime=SimpleNamespace(runtime_job_id="4242", start_ts=1.0, attempts=1))
+    definition = SimpleNamespace(
+        metadata={},
+        name="jobname",
+        class_name="SlurmJobConfig",
+        slurm=SimpleNamespace(sbatch=sbatch),
+        log_path=str(tmp_path / "slurm-%j.log"),
+    )
+    job = SimpleNamespace(
+        job_id="job-a",
+        definition=definition,
+        runtime=SimpleNamespace(runtime_job_id="4242", start_ts=1.0, attempts=1),
+    )
     # isinstance(job.definition, SlurmJobConfig) guards the exclude refresh: patch it for the namespace
     import monitor.loop as loop_mod
 
@@ -68,7 +80,16 @@ def test_run_restart_hooks_runs_pre_command_and_refreshes_excludes(tmp_path):
 def test_hooks_are_a_no_op_without_configuration():
     loop = MonitorLoop.__new__(MonitorLoop)
     loop._pending_restart_hooks = {}
-    job = SimpleNamespace(job_id="j", definition=SimpleNamespace(metadata={}, name="n", class_name="c", slurm=SimpleNamespace(sbatch=SimpleNamespace(exclude="a"))), runtime=SimpleNamespace(runtime_job_id=None, start_ts=None, attempts=0))
+    job = SimpleNamespace(
+        job_id="j",
+        definition=SimpleNamespace(
+            metadata={},
+            name="n",
+            class_name="c",
+            slurm=SimpleNamespace(sbatch=SimpleNamespace(exclude="a")),
+        ),
+        runtime=SimpleNamespace(runtime_job_id=None, start_ts=None, attempts=0),
+    )
     loop._run_restart_hooks(job, None)  # must not raise
     assert job.definition.slurm.sbatch.exclude == "a"
 
@@ -76,8 +97,8 @@ def test_hooks_are_a_no_op_without_configuration():
 def test_restart_hook_variables_include_log_dir(tmp_path, monkeypatch):
     """The pre_command may scan the run's whole log DIRECTORY, not just one log.
 
-    A node-fault scan needs {log_dir} because the lines that name a faulty node
-    are often written after the kill, into whichever log was open at the time.
+    A node-fault scan needs {log_dir} because the lines that name a faulty node are
+    often written after the kill, into whichever log was open at the time.
     """
     import subprocess
 

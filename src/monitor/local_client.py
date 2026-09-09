@@ -177,13 +177,17 @@ class LocalCommandClient(JobClientInterface):
             stdout_target = subprocess.DEVNULL
             if job.log_to_file is None or job.log_to_file:
                 timestamp = int(time.time())
-                resolved_log_path = resolve_log_path(job.log_path, job_id=job_id, timestamp=timestamp)
+                resolved_log_path = resolve_log_path(
+                    job.log_path, job_id=job_id, timestamp=timestamp
+                )
                 log_path_obj = Path(resolved_log_path)
                 log_path_obj.parent.mkdir(parents=True, exist_ok=True)
                 log_file = open(log_path_obj, "w")
                 stdout_target = log_file
                 if job.log_path_current:
-                    update_log_symlink(log_path_obj, Path(job.log_path_current.replace("%a", str(task_idx))))
+                    update_log_symlink(
+                        log_path_obj, Path(job.log_path_current.replace("%a", str(task_idx)))
+                    )
             try:
                 proc = subprocess.Popen(
                     [*job.command, *(job.extra_args or []), *job.array_args[task_idx]],
@@ -306,8 +310,8 @@ class LocalCommandClient(JobClientInterface):
     def cleanup(self) -> None:
         """Clean up all tracked jobs.
 
-        Terminates any running processes and clears job tracking. Useful
-        for graceful shutdown.
+        Terminates any running processes and clears job tracking. Useful for graceful
+        shutdown.
         """
         for job_id in list(self._jobs.keys()):
             self.cancel(job_id)

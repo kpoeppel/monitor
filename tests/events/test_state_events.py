@@ -77,8 +77,8 @@ def _active(store: JobFileStore) -> list[JobRecordConfig]:
 
 
 def test_timeout_state_event_finishes_and_removes_job(tmp_path):
-    """RUNNING -> TIMEOUT with a FinishAction marks the job finished, releases
-    it on the client, and drops it from the active poll set."""
+    """RUNNING -> TIMEOUT with a FinishAction marks the job finished, releases it on the
+    client, and drops it from the active poll set."""
     store = JobFileStore(tmp_path / "state")
     record = _submitted_job(
         tmp_path,

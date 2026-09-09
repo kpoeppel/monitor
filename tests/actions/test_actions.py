@@ -62,7 +62,9 @@ def test_finish_action() -> None:
 
 
 def test_new_job_action_with_local_config() -> None:
-    job_config = LocalJobConfig(name="new_job", command=["echo", "hello"], log_path="/tmp/new_job.log")
+    job_config = LocalJobConfig(
+        name="new_job", command=["echo", "hello"], log_path="/tmp/new_job.log"
+    )
     action = NewJobAction(NewJobActionConfig(job_config=job_config))
     result = action.execute(_context())
     assert result.status == "success"
@@ -111,6 +113,7 @@ def test_action_context_variables_includes_workspace(tmp_path: Path) -> None:
 
 def test_log_action_debug_level(caplog) -> None:
     import logging
+
     action = LogAction(LogActionConfig(message="debug msg", level="debug"))
     with caplog.at_level(logging.DEBUG):
         result = action.execute(_context())
@@ -120,6 +123,7 @@ def test_log_action_debug_level(caplog) -> None:
 
 def test_log_action_warning_level(caplog) -> None:
     import logging
+
     action = LogAction(LogActionConfig(message="warn msg", level="warning"))
     with caplog.at_level(logging.WARNING):
         result = action.execute(_context())
@@ -129,6 +133,7 @@ def test_log_action_warning_level(caplog) -> None:
 
 def test_log_action_error_level(caplog) -> None:
     import logging
+
     action = LogAction(LogActionConfig(message="err msg", level="error"))
     with caplog.at_level(logging.ERROR):
         result = action.execute(_context())
@@ -137,7 +142,9 @@ def test_log_action_error_level(caplog) -> None:
 
 
 def test_log_event_regex_pattern() -> None:
-    event = LogEvent(LogEventConfig(name="e", pattern=r"step=(\d+)", pattern_type="regex", match_once=False))
+    event = LogEvent(
+        LogEventConfig(name="e", pattern=r"step=(\d+)", pattern_type="regex", match_once=False)
+    )
     triggers = event.check_triggers("step=42 done\nstep=100 ok")
     assert len(triggers) == 2
     assert triggers[0]["match"] == "step=42"
@@ -145,12 +152,14 @@ def test_log_event_regex_pattern() -> None:
 
 
 def test_log_event_extract_groups_by_index() -> None:
-    event = LogEvent(LogEventConfig(
-        name="e",
-        pattern=r"epoch=(\d+)",
-        pattern_type="regex",
-        extract_groups={"epoch": 1, "full": "match"},
-    ))
+    event = LogEvent(
+        LogEventConfig(
+            name="e",
+            pattern=r"epoch=(\d+)",
+            pattern_type="regex",
+            extract_groups={"epoch": 1, "full": "match"},
+        )
+    )
     triggers = event.check_triggers("epoch=7")
     assert len(triggers) == 1
     assert triggers[0]["epoch"] == "7"
@@ -159,12 +168,14 @@ def test_log_event_extract_groups_by_index() -> None:
 
 def test_log_event_extract_groups_missing_group() -> None:
     # Group 2 doesn't exist — should be silently skipped
-    event = LogEvent(LogEventConfig(
-        name="e",
-        pattern=r"val=(\d+)",
-        pattern_type="regex",
-        extract_groups={"v": 1, "missing": 99},
-    ))
+    event = LogEvent(
+        LogEventConfig(
+            name="e",
+            pattern=r"val=(\d+)",
+            pattern_type="regex",
+            extract_groups={"v": 1, "missing": 99},
+        )
+    )
     triggers = event.check_triggers("val=5")
     assert len(triggers) == 1
     assert triggers[0]["v"] == "5"

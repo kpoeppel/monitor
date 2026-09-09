@@ -53,6 +53,7 @@ except ImportError:  # pragma: no cover - depends on optional slurm_gen install
         )
         return None
 
+
 from .utils.paths import (
     resolve_log_path,
     expand_log_path,
@@ -518,8 +519,7 @@ class MonitorLoop:
         had_activity: bool,
         now: float,
     ) -> str:
-        """Accumulate an inactivity streak and fire its action once it
-        qualifies.
+        """Accumulate an inactivity streak and fire its action once it qualifies.
 
         The streak is stored as a persistent EventRecord (keyed by the stable
         event_key) in ``runtime.events``: ``count`` counts consecutive inactive
@@ -687,9 +687,9 @@ class MonitorLoop:
     def _apply_effect(self, job: JobRecordConfig, effect: str, runtime_id: str | None) -> bool:
         """Advance a job's lifecycle for a terminal/restart action effect.
 
-        Returns True if the job was finished, cancelled, or restarted
-        (in which case the caller should stop processing it for this
-        poll), False for the "continue" effect.
+        Returns True if the job was finished, cancelled, or restarted (in which case the
+        caller should stop processing it for this poll), False for the "continue"
+        effect.
         """
         if effect == "finished":
             if runtime_id:
@@ -711,7 +711,11 @@ class MonitorLoop:
                 self._get_client(job).cancel(runtime_id)
                 hooks["wait_for_job_end"] = True
                 self._pending_restart_hooks[job.job_id] = hooks
-                LOGGER.info("Job %s: runtime job %s cancelled first; resubmission after it has left the queue", job.job_id, runtime_id)
+                LOGGER.info(
+                    "Job %s: runtime job %s cancelled first; resubmission after it has left the queue",
+                    job.job_id,
+                    runtime_id,
+                )
             if hooks.get("wait_for_job_end") and self._job_active(job):
                 # graceful exit in progress: the async checkpoint write may still
                 # be running behind the 'exiting program' line; resubmit once the
@@ -720,7 +724,9 @@ class MonitorLoop:
                 self._store.upsert(job)
                 LOGGER.info(
                     "Job %s: restart deferred until runtime job %s has ended (status %s)",
-                    job.job_id, runtime_id, job.runtime.last_status,
+                    job.job_id,
+                    runtime_id,
+                    job.runtime.last_status,
                 )
                 return True
             self._run_restart_hooks(job, runtime_id)
@@ -730,18 +736,33 @@ class MonitorLoop:
         return False
 
     # SLURM states in which a job still occupies (or waits for) resources
-    ACTIVE_STATES = frozenset({
-        "PENDING", "RUNNING", "COMPLETING", "CONFIGURING", "SUSPENDED", "REQUEUED",
-        "RESIZING", "STAGE_OUT", "SIGNALING", "REQUEUE_HOLD", "REQUEUE_FED", "RESV_DEL_HOLD",
-    })
+    ACTIVE_STATES = frozenset(
+        {
+            "PENDING",
+            "RUNNING",
+            "COMPLETING",
+            "CONFIGURING",
+            "SUSPENDED",
+            "REQUEUED",
+            "RESIZING",
+            "STAGE_OUT",
+            "SIGNALING",
+            "REQUEUE_HOLD",
+            "REQUEUE_FED",
+            "RESV_DEL_HOLD",
+        }
+    )
 
     def _job_active(self, job: JobRecordConfig) -> bool:
         return (job.runtime.last_status or "") in self.ACTIVE_STATES
 
     def _resume_deferred_restart(self, job: JobRecordConfig, runtime_id: str | None) -> bool:
-        """Resubmit a job whose restart was deferred (wait_for_job_end) once its
-        runtime job has left the queue. Returns True when the job was restarted
-        or is still waiting (the caller stops processing it for this poll)."""
+        """Resubmit a job whose restart was deferred (wait_for_job_end) once its runtime
+        job has left the queue.
+
+        Returns True when the job was restarted or is still waiting (the caller stops
+        processing it for this poll).
+        """
         if not job.runtime.deferred_restart:
             return False
         if self._job_active(job):
@@ -749,7 +770,12 @@ class MonitorLoop:
             return True
         self._pending_restart_hooks[job.job_id] = dict(job.runtime.deferred_restart)
         job.runtime.deferred_restart = {}
-        LOGGER.info("Job %s: runtime job %s ended (%s): running the deferred restart", job.job_id, runtime_id, job.runtime.last_status)
+        LOGGER.info(
+            "Job %s: runtime job %s ended (%s): running the deferred restart",
+            job.job_id,
+            runtime_id,
+            job.runtime.last_status,
+        )
         self._run_restart_hooks(job, runtime_id)
         self._restart_job(job)
         self._store.upsert(job)
@@ -784,9 +810,13 @@ class MonitorLoop:
             timeout = float(hooks.get("pre_command_timeout_s") or 900.0)
             LOGGER.info("restart hook: running pre_command for %s: %s", job.job_id, command)
             try:
-                proc = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
+                proc = subprocess.run(
+                    command, shell=True, capture_output=True, text=True, timeout=timeout
+                )
                 tail = (proc.stdout + proc.stderr).strip().splitlines()[-8:]
-                LOGGER.info("restart hook: pre_command exit %s | %s", proc.returncode, " / ".join(tail))
+                LOGGER.info(
+                    "restart hook: pre_command exit %s | %s", proc.returncode, " / ".join(tail)
+                )
             except subprocess.TimeoutExpired:
                 LOGGER.warning("restart hook: pre_command timed out after %ss", timeout)
             except Exception as exc:  # pragma: no cover - never block the restart
@@ -807,11 +837,16 @@ class MonitorLoop:
                         (str(before).count(",") + 1) if before else 0,
                     )
                 else:
-                    LOGGER.info("restart hook: exclusion file %s empty; sbatch exclude unchanged", exclude_file)
+                    LOGGER.info(
+                        "restart hook: exclusion file %s empty; sbatch exclude unchanged",
+                        exclude_file,
+                    )
             except Exception as exc:  # pragma: no cover
                 LOGGER.warning("restart hook: could not refresh the exclusion list: %s", exc)
 
-    def _status_action(self, job: JobRecordConfig, old_status: str | None, new_status: str | None) -> str:
+    def _status_action(
+        self, job: JobRecordConfig, old_status: str | None, new_status: str | None
+    ) -> str:
         """Process state transition events.
 
         Returns: "continue", "finished", "cancelled", or "restart". A terminal
@@ -967,11 +1002,10 @@ class MonitorLoop:
     def _update_current_symlinks(self, job: JobRecordConfig) -> None:
         """Point the job's current.* symlinks at its own log/config.
 
-        Called when a job enters RUNNING so that, in a dependency chain
-        (all jobs share one base_output_dir), current.log / current.yaml
-        track the job that is actually running rather than the last-
-        submitted one. Convenience only; the monitor reads each job's
-        own per-job log (see _resolve_log_path).
+        Called when a job enters RUNNING so that, in a dependency chain (all jobs share
+        one base_output_dir), current.log / current.yaml track the job that is actually
+        running rather than the last- submitted one. Convenience only; the monitor reads
+        each job's own per-job log (see _resolve_log_path).
         """
         definition = job.definition
         runtime_id = job.runtime.runtime_job_id
@@ -1094,8 +1128,7 @@ class MonitorLoop:
         )
 
     def _restart_job(self, job: JobRecordConfig) -> None:
-        """Restart job preserving condition_state, action_state, and
-        attempts."""
+        """Restart job preserving condition_state, action_state, and attempts."""
         runtime = job.runtime
         client = self._get_client(job)
 

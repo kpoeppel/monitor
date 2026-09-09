@@ -259,7 +259,9 @@ class TimeoutCondition(BaseCondition):
         if elapsed >= self.config.timeout_seconds:
             return ConditionResult(passed=False, message=self.config.message)
         remaining = self.config.timeout_seconds - elapsed
-        return ConditionResult(passed=True, message=f"{self.config.message} ({remaining:.1f}s remaining)")
+        return ConditionResult(
+            passed=True, message=f"{self.config.message} ({remaining:.1f}s remaining)"
+        )
 
 
 @dataclass
@@ -391,7 +393,9 @@ class CompositeCondition(BaseCondition):
 
     def __init__(self, config: CompositeConditionConfig) -> None:
         super().__init__(config)
-        self._children = [condition.instantiate(MonitorConditionInterface) for condition in config.conditions]
+        self._children = [
+            condition.instantiate(MonitorConditionInterface) for condition in config.conditions
+        ]
 
     def check(self, context: ConditionContext) -> ConditionResult:
         child_states = context.state.setdefault("conditions", {})
@@ -411,13 +415,17 @@ class CompositeCondition(BaseCondition):
             if all(result.passed for result in results):
                 return ConditionResult(passed=True)
             failed = next((r for r in results if not r.passed), None)
-            return failed or ConditionResult(passed=False, message="unknown composite failure")  # pragma: no cover
+            return failed or ConditionResult(
+                passed=False, message="unknown composite failure"
+            )  # pragma: no cover
 
         # mode == "any"
         if any(result.passed for result in results):
             return ConditionResult(passed=True)
         failed = next((r for r in results if not r.passed), None)
-        return failed or ConditionResult(passed=False, message="all child conditions failed")  # pragma: no cover
+        return failed or ConditionResult(
+            passed=False, message="all child conditions failed"
+        )  # pragma: no cover
 
 
 @dataclass
@@ -482,7 +490,9 @@ class NotCondition(BaseCondition):
         )
         result = self._child.check(child_ctx)
         if result.passed:
-            return ConditionResult(passed=False, message=f"NOT condition failed: child {result.message}")
+            return ConditionResult(
+                passed=False, message=f"NOT condition failed: child {result.message}"
+            )
         return ConditionResult(passed=True)
 
 
@@ -503,7 +513,9 @@ class MetadataCondition(BaseCondition):
             return ConditionResult(passed=False, message="metadata key missing")  # pragma: no cover
         value = context.event.metadata.get(self.config.key)
         if value is None:
-            return ConditionResult(passed=False, message=f"metadata key '{self.config.key}' not present")
+            return ConditionResult(
+                passed=False, message=f"metadata key '{self.config.key}' not present"
+            )
         if self.config.equals is not None and value != self.config.equals:
             return ConditionResult(
                 passed=False,

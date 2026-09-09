@@ -1,5 +1,4 @@
-"""A ``progress_mode: furthest`` streak must survive a restart; its CLOCK must
-not.
+"""A ``progress_mode: furthest`` streak must survive a restart; its CLOCK must not.
 
 Without this, a restart LOOP is invisible to the progress events. Each cycle is
 a fresh SLURM job, ``_restart_job`` wipes ``runtime.events``, and the streak
@@ -61,8 +60,7 @@ def _iter_line(n: int) -> str:
 
 
 def _make_job(tmp_path: Path, *, polls: int = 3, timeout_s: float = 180.0):
-    """A local job with an independent restart trigger plus the furthest-mode
-    guard.
+    """A local job with an independent restart trigger plus the furthest-mode guard.
 
     The trigger models "some infra fault restarted the job" -- the Shape B
     scenario -- so the guard under test is not also the thing causing the
@@ -92,7 +90,9 @@ def _make_job(tmp_path: Path, *, polls: int = 3, timeout_s: float = 180.0):
             ),
         ],
     )
-    return JobRecordConfig(job_id="job", definition=definition, runtime=JobRuntimeConfig()), log_path
+    return JobRecordConfig(
+        job_id="job", definition=definition, runtime=JobRuntimeConfig()
+    ), log_path
 
 
 def _reload(store: JobFileStore) -> JobRecordConfig:
@@ -180,8 +180,7 @@ def test_furthest_iteration_survives_a_restart_but_the_clock_does_not(
 
 
 def test_no_progress_time_already_counted_carries_across_a_restart(tmp_path, client, monkeypatch):
-    """The queue is dropped, but time the job spent RUNNING without net
-    progress is not.
+    """The queue is dropped, but time the job spent RUNNING without net progress is not.
 
     This is what makes a fast restart loop detectable: without it every cycle
     would reset the streak to zero and a ~7 min cycle could never reach the
@@ -225,11 +224,10 @@ def test_no_progress_time_already_counted_carries_across_a_restart(tmp_path, cli
 
 
 def test_healthy_rollover_with_a_long_queue_never_trips_the_guard(tmp_path, client, monkeypatch):
-    """Restart -> 3 h queue -> resume -> climb back past the mark. Must not
-    fire.
+    """Restart -> 3 h queue -> resume -> climb back past the mark. Must not fire.
 
-    This is the shape of every healthy wall-clock rollover, so a false
-    positive here would restart a perfectly good 512-node run.
+    This is the shape of every healthy wall-clock rollover, so a false positive here
+    would restart a perfectly good 512-node run.
     """
     clock = FakeClock(1000.0)
     monkeypatch.setattr(loop_mod, "time", clock)
@@ -271,9 +269,9 @@ def test_healthy_rollover_with_a_long_queue_never_trips_the_guard(tmp_path, clie
 def test_a_restart_loop_that_never_regains_ground_is_caught(tmp_path, client, monkeypatch):
     """The Shape B case that was previously invisible.
 
-    Each cycle relaunches, resumes below the mark and dies again without
-    ever passing it. Before the mark was carried, every cycle wiped the
-    streak and the guard could never accumulate its window.
+    Each cycle relaunches, resumes below the mark and dies again without ever passing
+    it. Before the mark was carried, every cycle wiped the streak and the guard could
+    never accumulate its window.
     """
     clock = FakeClock(1000.0)
     monkeypatch.setattr(loop_mod, "time", clock)

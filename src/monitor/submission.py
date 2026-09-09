@@ -69,7 +69,9 @@ class SlurmJobConfig(BaseJob, ConfigInterface):
 class LocalJobConfig(BaseJob, ConfigInterface):
     command: list[str] = field(default_factory=list)
     extra_args: list[str] = field(default_factory=list)
-    array_args: list[list[str]] | None = None  # potentially appended to the main command for array jobs
+    array_args: list[list[str]] | None = (
+        None  # potentially appended to the main command for array jobs
+    )
     log_to_file: bool = True
     name: str = ""
 

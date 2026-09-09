@@ -12,7 +12,11 @@ from monitor.actions import (
     LogEventConfig,
     StateEventConfig,
 )
-from monitor.conditions import AlwaysTrueConditionConfig, FileExistsConditionConfig, CooldownConditionConfig
+from monitor.conditions import (
+    AlwaysTrueConditionConfig,
+    FileExistsConditionConfig,
+    CooldownConditionConfig,
+)
 from monitor.conditions import TimeoutConditionConfig, CompositeConditionConfig
 from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop, _normalize_job_definition
 from monitor.submission import LocalJobConfig
@@ -614,6 +618,7 @@ def test_monitor_loop_submission_exception_is_handled(tmp_path: Path) -> None:
     Left active, the record is retried on every poll forever and the failure is
     invisible; ``cancelled`` says a job that never started is done.
     """
+
     class ErrorClient(FakeClient):
         def submit(self, job):
             raise RuntimeError("network down")
@@ -709,7 +714,8 @@ def _append_log(path: Path, text: str) -> None:
 
 
 def test_monitor_loop_persistent_pass(tmp_path: Path) -> None:
-    """Once a persistent_pass condition passes, subsequent failures still return pass."""
+    """Once a persistent_pass condition passes, subsequent failures still return
+    pass."""
     store = JobFileStore(tmp_path / "state")
     client = FakeClient()
     loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
@@ -814,7 +820,8 @@ def test_monitor_loop_unsubmitted_job_finish(tmp_path: Path) -> None:
 
 
 def test_normalize_job_definition_dict_events(tmp_path: Path) -> None:
-    """_normalize_job_definition should parse dict log/state events into typed configs."""
+    """_normalize_job_definition should parse dict log/state events into typed
+    configs."""
     record = JobRecordConfig(
         job_id="norm",
         definition=LocalJobConfig(
@@ -828,7 +835,11 @@ def test_normalize_job_definition_dict_events(tmp_path: Path) -> None:
         {"name": "evt", "pattern": "HIT", "action": {"class_name": "LogAction", "message": "hit"}},
     ]
     record.definition.state_events = [
-        {"name": "started", "transition": [None, "RUNNING"], "action": {"class_name": "LogAction", "message": "started"}},
+        {
+            "name": "started",
+            "transition": [None, "RUNNING"],
+            "action": {"class_name": "LogAction", "message": "started"},
+        },
     ]
     _normalize_job_definition(record)
     assert isinstance(record.definition.log_events[0], LogEventConfig)
@@ -879,8 +890,8 @@ def test_monitor_loop_new_job_action_submits_job(tmp_path: Path) -> None:
 def test_monitor_loop_restart_that_cannot_resubmit_ends_the_job(tmp_path: Path) -> None:
     """A restart whose resubmission fails must not leave the job active.
 
-    Left active with no runtime job id, the record is polled forever against a
-    job that does not exist and nothing ever says so.
+    Left active with no runtime job id, the record is polled forever against a job that
+    does not exist and nothing ever says so.
     """
 
     class ErrorOnResubmit(FakeClient):
@@ -923,8 +934,8 @@ def test_monitor_loop_restart_that_cannot_resubmit_ends_the_job(tmp_path: Path) 
 def test_monitor_loop_terminal_state_distinguishes_completed_from_failed(tmp_path: Path) -> None:
     """A job that ended FAILED is 'cancelled', not 'finished'.
 
-    Reporting every terminal state as 'finished' hides the failure from anything
-    that later reads the session.
+    Reporting every terminal state as 'finished' hides the failure from anything that
+    later reads the session.
     """
     store = JobFileStore(tmp_path / "state")
     client = FakeClient()

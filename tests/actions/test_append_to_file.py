@@ -25,9 +25,7 @@ def _context(**payload) -> ActionContext:
 
 def test_appends_the_rendered_line(tmp_path: Path):
     target = tmp_path / "excluded.txt"
-    action = AppendToFileAction(
-        AppendToFileActionConfig(path=str(target), content="{node}")
-    )
+    action = AppendToFileAction(AppendToFileActionConfig(path=str(target), content="{node}"))
 
     result = action.execute(_context(node="node-001-01"))
 
@@ -74,9 +72,7 @@ def test_dedup_off_appends_regardless(tmp_path: Path):
 
 def test_creates_parent_directories(tmp_path: Path):
     target = tmp_path / "nested" / "deeper" / "excluded.txt"
-    action = AppendToFileAction(
-        AppendToFileActionConfig(path=str(target), content="{node}")
-    )
+    action = AppendToFileAction(AppendToFileActionConfig(path=str(target), content="{node}"))
 
     action.execute(_context(node="node-003-03"))
 
@@ -99,9 +95,7 @@ def test_create_parents_off_leaves_a_missing_directory_alone(tmp_path: Path):
 def test_empty_content_appends_nothing(tmp_path: Path):
     """An event whose capture came back empty must not add a blank line."""
     target = tmp_path / "excluded.txt"
-    action = AppendToFileAction(
-        AppendToFileActionConfig(path=str(target), content="{node}")
-    )
+    action = AppendToFileAction(AppendToFileActionConfig(path=str(target), content="{node}"))
 
     result = action.execute(_context(node="   "))
 
@@ -114,9 +108,7 @@ def test_the_written_list_reads_back_as_a_nodelist(tmp_path: Path):
     from slurm_gen import read_exclude_nodes
 
     target = tmp_path / "excluded.txt"
-    action = AppendToFileAction(
-        AppendToFileActionConfig(path=str(target), content="{node}")
-    )
+    action = AppendToFileAction(AppendToFileActionConfig(path=str(target), content="{node}"))
     action.execute(_context(node="node-001-01"))
     action.execute(_context(node="node-002-02"))
 

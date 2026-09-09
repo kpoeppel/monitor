@@ -55,8 +55,8 @@ def _iter_line(n: int) -> str:
 
 
 def test_check_triggers_is_noop_for_progress():
-    """Progress is streak based, not match-once-and-fire: check_triggers must
-    not turn a matching line into an immediate action."""
+    """Progress is streak based, not match-once-and-fire: check_triggers must not turn a
+    matching line into an immediate action."""
     cfg = LogEventConfig(name="stalled", pattern_type="progress", pattern=ITER_PATTERN)
     event = LogEvent(cfg)
     assert event.check_triggers(_iter_line(42)) == []
@@ -103,8 +103,8 @@ def test_observe_progress_with_no_match_is_the_no_movement_signal():
 
 
 def test_observe_progress_ignores_unparseable_groups():
-    """A group that matches but is not a number must not raise or poison the
-    result — the other matches still count."""
+    """A group that matches but is not a number must not raise or poison the result —
+    the other matches still count."""
     cfg = LogEventConfig(
         name="stalled", pattern_type="progress", pattern=r"iteration +(\S+)/", progress_group=1
     )
@@ -156,8 +156,8 @@ def test_progress_advanced_first_sighting_counts_as_movement(mode):
 
 @pytest.mark.parametrize("mode", ["any_change", "furthest"])
 def test_progress_advanced_no_match_never_moves(mode):
-    """A job that emits no counter at all never moves, in either mode — this is
-    what catches a startup hang (jobs 1392564, 1392777: zero iterations)."""
+    """A job that emits no counter at all never moves, in either mode — this is what
+    catches a startup hang (jobs 1392564, 1392777: zero iterations)."""
     cfg = LogEventConfig(
         name="stalled", pattern_type="progress", pattern=ITER_PATTERN, progress_mode=mode
     )
@@ -287,8 +287,8 @@ def _streak_count(job: JobRecordConfig) -> int:
 
 
 def test_restart_after_n_polls_without_progress(tmp_path, client):
-    """A log that keeps GROWING but never advances the counter still restarts —
-    the case the inactivity check cannot see."""
+    """A log that keeps GROWING but never advances the counter still restarts — the case
+    the inactivity check cannot see."""
     store = JobFileStore(tmp_path / "state")
     record, log_path = _make_job(tmp_path, progress_polls=3)
     store.upsert(record)
@@ -345,8 +345,7 @@ def test_advancing_counter_resets_the_streak(tmp_path, client):
 
 
 def test_startup_hang_with_no_iterations_ever(tmp_path, client):
-    """Jobs 1392564 / 1392777: hundreds of MB of per-rank banners, zero
-    iterations.
+    """Jobs 1392564 / 1392777: hundreds of MB of per-rank banners, zero iterations.
 
     Every poll has new text, so inactivity is silent.
     """
@@ -365,8 +364,8 @@ def test_startup_hang_with_no_iterations_ever(tmp_path, client):
 
 
 def test_resume_rewind_does_not_trip_any_change_mode(tmp_path, client):
-    """A healthy in-job restart rewinds the counter to the last checkpoint; the
-    default mode must treat that as progress, not as a stall."""
+    """A healthy in-job restart rewinds the counter to the last checkpoint; the default
+    mode must treat that as progress, not as a stall."""
     store = JobFileStore(tmp_path / "state")
     record, log_path = _make_job(tmp_path, progress_polls=2, progress_mode="any_change")
     store.upsert(record)
@@ -390,9 +389,8 @@ def test_resume_rewind_does_not_trip_any_change_mode(tmp_path, client):
 
 
 def test_furthest_mode_fires_on_a_net_zero_restart_loop(tmp_path, client):
-    """Same rewind, but `max` mode: replaying already-done iterations is not
-    progress, so a loop that never gets past the furthest iteration it reached
-    is caught."""
+    """Same rewind, but `max` mode: replaying already-done iterations is not progress,
+    so a loop that never gets past the furthest iteration it reached is caught."""
     store = JobFileStore(tmp_path / "state")
     record, log_path = _make_job(tmp_path, progress_polls=2, progress_mode="furthest")
     store.upsert(record)
@@ -412,8 +410,8 @@ def test_furthest_mode_fires_on_a_net_zero_restart_loop(tmp_path, client):
 
 
 def test_progress_timeout_gates_the_poll_count(tmp_path, client, monkeypatch):
-    """Polls=2 AND timeout=300s: reaching 2 stalled polls is not enough while
-    real elapsed time is under 300s."""
+    """Polls=2 AND timeout=300s: reaching 2 stalled polls is not enough while real
+    elapsed time is under 300s."""
     clock = FakeClock(1000.0)
     monkeypatch.setattr(loop_mod, "time", clock)
 
@@ -444,8 +442,7 @@ def test_progress_timeout_gates_the_poll_count(tmp_path, client, monkeypatch):
     [("increase", "any_change"), ("max", "furthest")],
 )
 def test_legacy_progress_mode_spellings_are_normalised(legacy, expected):
-    """`increase`/`max` were renamed; older persisted job records still use
-    them.
+    """`increase`/`max` were renamed; older persisted job records still use them.
 
     They must still PARSE. JobFileStore.load_all() swallows a ValueError and
     `continue`s, so a rejected value would not raise — the job would just

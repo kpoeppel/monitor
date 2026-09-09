@@ -40,7 +40,9 @@ class ActionResult:
     message: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     status: str = "success"  # For tracking action execution status
-    action_config: BaseMonitorAction.cfgtype | None = None  # Reference to the action's config for typed access
+    action_config: BaseMonitorAction.cfgtype | None = (
+        None  # Reference to the action's config for typed access
+    )
 
 
 @dataclass(kw_only=True)
@@ -71,7 +73,9 @@ class EventRecord:
             self.history.append({"ts": self.last_seen_ts, "note": note})  # pragma: no cover
 
 
-def event_key(job_id: str, event_name: str, metadata: dict[str, Any] | None = None) -> tuple[str, str]:
+def event_key(
+    job_id: str, event_name: str, metadata: dict[str, Any] | None = None
+) -> tuple[str, str]:
     h = hashlib.md5()
     h.update(json.dumps(metadata).encode("utf8"))
     h = str(h.digest())[:16]
@@ -247,8 +251,7 @@ def _torch_dist_missing_files(path: Path) -> list[str] | None:
 
 
 def checkpoint_status(path: Path) -> tuple[str, str]:
-    """Classify a torch_dist checkpoint as complete / incomplete /
-    unverifiable.
+    """Classify a torch_dist checkpoint as complete / incomplete / unverifiable.
 
     THREE STATES, NOT TWO, and the third one is the point.
 
@@ -297,8 +300,7 @@ def checkpoint_is_complete(path: Path) -> tuple[bool, str]:
 
 @dataclass
 class QuarantineCheckpointActionConfig(ConfigInterface):
-    """Move a corrupt checkpoint aside and roll the tracker back to a valid
-    one.
+    """Move a corrupt checkpoint aside and roll the tracker back to a valid one.
 
     Automates the manual recovery: rename ``iter_N`` to ``failed_iter_N`` and
     rewrite ``latest_checkpointed_iteration.txt`` to the newest checkpoint that
@@ -367,8 +369,7 @@ class QuarantineCheckpointAction(BaseMonitorAction):
             return ActionResult(
                 status="failed",
                 message=(
-                    f"could not determine the failing iteration "
-                    f"(raw={raw!r}, tracker={tracker})"
+                    f"could not determine the failing iteration (raw={raw!r}, tracker={tracker})"
                 ),
             )
 
@@ -720,8 +721,8 @@ class LogEvent:
         self.config = config
 
     def check_triggers(self, log_text: str) -> list[dict[str, Any]]:
-        """Check if event triggers in the given log text, return metadata for
-        each match.
+        """Check if event triggers in the given log text, return metadata for each
+        match.
 
         Inactivity and progress events are streak based rather than
         match-once-and-fire, and are handled separately by the monitor loop (see

@@ -133,9 +133,9 @@ def test_rehydrate_handles_array_task_ids(tmp_path: Path):
 def test_rehydrate_skips_unsubmitted_finished_and_idless(tmp_path: Path):
     """Only live, already-submitted jobs are adopted.
 
-    An unsubmitted job must stay unsubmitted (the first poll submits
-    it); a finished job must not be resurrected into the queue; and a
-    record with no runtime id has nothing to adopt.
+    An unsubmitted job must stay unsubmitted (the first poll submits it); a finished job
+    must not be resurrected into the queue; and a record with no runtime id has nothing
+    to adopt.
     """
     store = JobFileStore(tmp_path / "state")
     store.upsert(_slurm_job(tmp_path, job_id="live", runtime_id="1"))

@@ -39,8 +39,8 @@ from monitor.submission import LocalJobConfig
 
 
 def test_check_triggers_is_noop_for_inactivity():
-    """Inactivity is time/poll based, not text based: check_triggers must not
-    match against log content."""
+    """Inactivity is time/poll based, not text based: check_triggers must not match
+    against log content."""
     cfg = LogEventConfig(name="inactive", pattern_type="inactivity")
     event = LogEvent(cfg)
     assert event.check_triggers("anything at all\nmore text") == []
@@ -235,8 +235,8 @@ def test_activity_resets_the_inactivity_streak(tmp_path, client):
 
 
 def test_restart_after_inactivity_timeout(tmp_path, client, monkeypatch):
-    """Timeout=300s with a 1-poll floor fires once real elapsed time crosses
-    the threshold, regardless of how many polls that took."""
+    """Timeout=300s with a 1-poll floor fires once real elapsed time crosses the
+    threshold, regardless of how many polls that took."""
     clock = FakeClock(1000.0)
     monkeypatch.setattr(loop_mod, "time", clock)
 
@@ -259,8 +259,8 @@ def test_restart_after_inactivity_timeout(tmp_path, client, monkeypatch):
 
 
 def test_and_semantics_time_floor_gates_poll_count(tmp_path, client, monkeypatch):
-    """Polls=5 AND timeout=300s: hitting 5 polls is not enough while the real
-    elapsed time is still under 300s."""
+    """Polls=5 AND timeout=300s: hitting 5 polls is not enough while the real elapsed
+    time is still under 300s."""
     clock = FakeClock(1000.0)
     monkeypatch.setattr(loop_mod, "time", clock)
 

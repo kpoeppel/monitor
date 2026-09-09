@@ -73,8 +73,7 @@ def test_update_current_symlinks_noop_without_current(tmp_path: Path):
 
 
 def test_observe_once_updates_symlink_on_running_transition(tmp_path: Path):
-    """A PENDING->RUNNING transition observed by the loop re-points
-    current.*."""
+    """A PENDING->RUNNING transition observed by the loop re-points current.*."""
 
     class FakeClient:
         def __init__(self, statuses):

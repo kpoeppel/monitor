@@ -71,12 +71,24 @@ def test_iteration_multiple_condition():
     assert c.check(ConditionContext(job_metadata={"iteration": "80000"})).passed
     assert not c.check(ConditionContext(job_metadata={"iteration": "86000"})).passed
     assert not c.check(ConditionContext(job_metadata={})).passed
-    assert not IterationMultipleCondition(IterationMultipleConditionConfig(every=0)).check(ConditionContext(job_metadata={"iteration": "80000"})).passed
+    assert (
+        not IterationMultipleCondition(IterationMultipleConditionConfig(every=0))
+        .check(ConditionContext(job_metadata={"iteration": "80000"}))
+        .passed
+    )
 
 
 def test_run_command_is_templated_with_iteration_and_ckpt_dir(tmp_path):
     out = tmp_path / "hook.txt"
-    act = RunCommandAction(RunCommandActionConfig(command=f"echo {{iteration}} {{ckpt_dir}} > {out}", timeout_s=30))
-    ev = EventRecord(event_id="e", name="checkpoint_saved", source="log", payload={"iteration": "84000", "ckpt_dir": "/x/checkpoints"}, metadata={"job_id": "j"})
+    act = RunCommandAction(
+        RunCommandActionConfig(command=f"echo {{iteration}} {{ckpt_dir}} > {out}", timeout_s=30)
+    )
+    ev = EventRecord(
+        event_id="e",
+        name="checkpoint_saved",
+        source="log",
+        payload={"iteration": "84000", "ckpt_dir": "/x/checkpoints"},
+        metadata={"job_id": "j"},
+    )
     res = act.execute(ActionContext(event=ev, job_metadata={}))
     assert res.status == "success" and out.read_text().strip() == "84000 /x/checkpoints"

@@ -155,8 +155,7 @@ def test_update_chain_excludes_noop_without_slurm_client(tmp_path: Path):
 
 
 def test_update_chain_excludes_via_real_monitor_client(tmp_path: Path):
-    """Exercise the real monitor SlurmClient wrapper (delegates to
-    scontrol)."""
+    """Exercise the real monitor SlurmClient wrapper (delegates to scontrol)."""
     exclude_file = tmp_path / "exclude.txt"
     exclude_file.write_text("lrdn0417\nlrdn0001\n")
 
@@ -189,8 +188,7 @@ def test_update_chain_excludes_via_real_monitor_client(tmp_path: Path):
 
 
 def test_update_chain_excludes_action_carries_resolved_path():
-    """The action renders {var} in exclude_file and signals via
-    action_config."""
+    """The action renders {var} in exclude_file and signals via action_config."""
     config = UpdateChainExcludesActionConfig(exclude_file="{exclude_dir}/exclude.txt")
     event = EventRecord(event_id="e", name="propagate", source="log")
     ctx = ActionContext(event=event, job_metadata={"exclude_dir": "/tmp/excl"})

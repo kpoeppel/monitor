@@ -1,0 +1,43 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+#
+# Mirrors the configuration of OpenEuroLLM/oellm-autoexp, which these packages
+# are extracted from, so a file formatted here stays formatted there.
+repos:
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v6.0.0
+  hooks:
+  - id: check-added-large-files
+  - id: check-case-conflict
+  - id: check-json
+  - id: check-merge-conflict
+  - id: check-symlinks
+  - id: check-toml
+  - id: check-yaml
+  - id: debug-statements
+  - id: detect-private-key
+  - id: end-of-file-fixer
+  - id: mixed-line-ending
+  - id: pretty-format-json
+    args: [ --autofix, --no-sort-keys ]
+  - id: name-tests-test
+    args: [ --pytest-test-first ]
+  - id: trailing-whitespace
+- repo: https://github.com/asottile/pyupgrade
+  rev: v3.21.0
+  hooks:
+  - id: pyupgrade
+    args: [ --py310-plus ]
+- repo: https://github.com/PyCQA/docformatter
+  rev: v1.7.7
+  hooks:
+  - id: docformatter
+    additional_dependencies: [ tomli ]
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.14.0
+  hooks:
+  - id: ruff
+    types_or: [ python, pyi ]
+    args: [ --fix ]
+  - id: ruff-format
+    types_or: [ python, pyi ]

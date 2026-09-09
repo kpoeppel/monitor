@@ -80,13 +80,13 @@ def test_local_client_log_to_file_false(tmp_path: Path) -> None:
 
 
 def test_local_client_cancel_nonexistent() -> None:
-    """cancel() on unknown job ID should not raise."""
+    """Cancel() on unknown job ID should not raise."""
     client = LocalCommandClient()
     client.cancel("nonexistent-job-id")  # should be a no-op
 
 
 def test_local_client_remove_nonexistent() -> None:
-    """remove() on unknown job ID should not raise."""
+    """Remove() on unknown job ID should not raise."""
     client = LocalCommandClient()
     client.remove("nonexistent-job-id")  # should be a no-op
 
@@ -108,7 +108,7 @@ def test_local_client_failed_status(tmp_path: Path) -> None:
 
 
 def test_local_client_cleanup(tmp_path: Path) -> None:
-    """cleanup() cancels and removes all tracked jobs."""
+    """Cleanup() cancels and removes all tracked jobs."""
     client = LocalCommandClient()
     log_path = tmp_path / "sleep_%t.log"
     job_id = client.submit(

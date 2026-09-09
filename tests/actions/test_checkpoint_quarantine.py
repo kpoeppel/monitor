@@ -23,7 +23,10 @@ from monitor.actions import (
 
 
 def _checkpoint(root: Path, iteration: int, *, complete: bool = True, tmp_shard: bool = False):
-    """Build an iter_* directory. ``complete`` writes .metadata and common.pt."""
+    """Build an iter_* directory.
+
+    ``complete`` writes .metadata and common.pt.
+    """
     d = root / f"iter_{iteration:07d}"
     d.mkdir(parents=True)
     (d / "__0_0.distcp").write_text("shard")
@@ -37,7 +40,7 @@ def _checkpoint(root: Path, iteration: int, *, complete: bool = True, tmp_shard:
 
 @pytest.fixture
 def unreadable_metadata(monkeypatch):
-    """torch is absent here, so `.metadata` is never actually parsed."""
+    """Torch is absent here, so `.metadata` is never actually parsed."""
     import monitor.actions as actions
 
     monkeypatch.setattr(actions, "_torch_dist_missing_files", lambda path: None)
@@ -85,9 +88,7 @@ class TestCheckpointStatus:
         assert "unreadable" in why
         assert checkpoint_is_complete(d) == (False, why)
 
-    def test_shards_named_in_metadata_but_absent_are_incomplete(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_shards_named_in_metadata_but_absent_are_incomplete(self, tmp_path: Path, monkeypatch):
         import monitor.actions as actions
 
         monkeypatch.setattr(actions, "_torch_dist_missing_files", lambda path: ["__7_0.distcp"])
@@ -106,9 +107,7 @@ class TestCheckpointStatus:
 
 def _run(root: Path, iteration: str = "{iteration}", **kwargs):
     action = QuarantineCheckpointAction(
-        QuarantineCheckpointActionConfig(
-            checkpoint_dir=str(root), iteration=iteration, **kwargs
-        )
+        QuarantineCheckpointActionConfig(checkpoint_dir=str(root), iteration=iteration, **kwargs)
     )
     event = EventRecord(event_id="e", name="ckpt", source="log", payload={"iteration": "200"})
     return action.execute(ActionContext(event=event, job_metadata={"job_id": "j"}))

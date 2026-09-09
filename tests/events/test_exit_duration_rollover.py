@@ -108,9 +108,8 @@ def _make_job(
     line: str,
     max_attempts: int = 150,
 ) -> JobRecordConfig:
-    """A local job that prints ``line`` and exits 0 — the shape of a Megatron
-    segment that hit its duration budget (exit code 0, so a plain
-    COMPLETED)."""
+    """A local job that prints ``line`` and exits 0 — the shape of a Megatron segment
+    that hit its duration budget (exit code 0, so a plain COMPLETED)."""
     definition = LocalJobConfig(
         name="segment",
         command=["python3", "-c", f"print({line!r})"],
@@ -141,8 +140,7 @@ def _reload(store: JobFileStore) -> JobRecordConfig:
 
 
 def _await_idle(client: LocalCommandClient, timeout: float = 30.0) -> None:
-    """Block until no local job is RUNNING, so the next poll sees a finished
-    one.
+    """Block until no local job is RUNNING, so the next poll sees a finished one.
 
     These jobs are REAL subprocesses -- ``python3 -c "print(...)"`` needs ~10 ms
     to start, print and exit -- while the polls below run back-to-back with
@@ -191,8 +189,8 @@ def test_genuine_completion_still_finishes(tmp_path, client):
 
 
 def test_max_attempts_stops_the_rollover_loop(tmp_path, client):
-    """Without the cap this event would relaunch every healthy segment forever;
-    at the ceiling the job falls through to the normal COMPLETED handling."""
+    """Without the cap this event would relaunch every healthy segment forever; at the
+    ceiling the job falls through to the normal COMPLETED handling."""
     job = _run(tmp_path, client, line=REAL_EXIT_LINE, polls=6, max_attempts=2)
     assert job.runtime.attempts == 2
     assert job.runtime.final_state == "finished"
