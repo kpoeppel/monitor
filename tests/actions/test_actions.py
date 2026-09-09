@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 from slurm_gen import SlurmConfig
@@ -20,6 +19,8 @@ from monitor.actions import (
     EventRecord,
     LogEvent,
     LogEventConfig,
+    RunCommandAction,
+    RunCommandActionConfig,
 )
 from monitor.submission import LocalJobConfig, SlurmJobConfig
 
@@ -168,3 +169,61 @@ def test_log_event_extract_groups_missing_group() -> None:
     assert len(triggers) == 1
     assert triggers[0]["v"] == "5"
     assert "missing" not in triggers[0]
+
+
+class TestRunCommandAction:
+    """A side effect of a log/state event; never terminal."""
+
+    def test_runs_the_templated_command(self, tmp_path):
+        out = tmp_path / "out.txt"
+        action = RunCommandAction(
+            RunCommandActionConfig(command=f"echo {{node}} > {out}", timeout_s=30)
+        )
+        event = EventRecord(event_id="e", name="n", source="log", payload={"node": "node-01"})
+
+        result = action.execute(ActionContext(event=event, job_metadata={}))
+
+        assert result.status == "success"
+        assert result.metadata["returncode"] == 0
+        assert out.read_text().strip() == "node-01"
+
+    def test_empty_command_is_a_failure_not_a_crash(self):
+        action = RunCommandAction(RunCommandActionConfig(command="   "))
+        event = EventRecord(event_id="e", name="n", source="log")
+
+        result = action.execute(ActionContext(event=event, job_metadata={}))
+
+        assert result.status == "failed"
+        assert result.message == "empty command"
+
+    def test_nonzero_exit_is_reported_as_failed(self):
+        action = RunCommandAction(RunCommandActionConfig(command="exit 3", timeout_s=30))
+        event = EventRecord(event_id="e", name="n", source="log")
+
+        result = action.execute(ActionContext(event=event, job_metadata={}))
+
+        assert result.status == "failed"
+        assert result.metadata["returncode"] == 3
+
+    def test_timeout_is_reported_not_raised(self):
+        """A hook that hangs must not wedge the poll it fires from."""
+        action = RunCommandAction(RunCommandActionConfig(command="sleep 5", timeout_s=0.05))
+        event = EventRecord(event_id="e", name="n", source="log")
+
+        result = action.execute(ActionContext(event=event, job_metadata={}))
+
+        assert result.status == "failed"
+        assert "timed out" in result.message
+
+    def test_runs_in_the_configured_directory(self, tmp_path):
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        out = tmp_path / "pwd.txt"
+        action = RunCommandAction(
+            RunCommandActionConfig(command=f"pwd > {out}", cwd=str(workdir), timeout_s=30)
+        )
+        event = EventRecord(event_id="e", name="n", source="log")
+
+        action.execute(ActionContext(event=event, job_metadata={}))
+
+        assert out.read_text().strip() == str(workdir)

@@ -21,7 +21,14 @@ so a single monitor loop can be restarted safely.
 - Restart/cancel/finish actions triggered from log events.
 - Start/cancel/finish conditions on each job.
 - Persistent condition states (e.g., latch once a file appears).
-- Resume from a state directory (one job file per job).
+- Resume from a state directory (one job file per job), including re-attaching
+  to a session this monitor did not submit (`MonitorLoop.rehydrate()`).
+- Streak-based health checks: **inactivity** (the log stopped growing) and
+  **progress** (a counter in the log stopped advancing).
+- Restart hooks: run a command before a resubmission, refresh the node-exclusion
+  list, or defer the restart until the job has actually left the queue.
+- Per-event action budgets, so one event's limit does not silently disable
+  another's.
 
 ## Usage (Python)
 
@@ -127,6 +134,15 @@ Cleanup completed jobs:
 python scripts/monitor_cleanup.py --state-dir ./state --done-only
 ```
 
+Close out sessions whose monitor was killed before it could write `final_state`
+(resolved against `sacct`, dry run by default, and never touching a session with
+a job still in the queue):
+
+```bash
+python scripts/retire_sessions.py --state-dir ./state          # dry run
+python scripts/retire_sessions.py --state-dir ./state --apply
+```
+
 Validate a YAML config:
 
 ```bash
@@ -146,8 +162,17 @@ Cleanup is covered by `tests/scripts/test_monitor_scripts.py` (invokes `monitor_
 ## Log Paths
 
 - `log_path` can include `%j` (job id) or `%t` (submission timestamp).
-- `log_path_current` is a stable path (symlink) updated on submission.
+- `log_path_current` is a stable path (symlink) that the monitor re-points at a
+  job when that job enters `RUNNING`.
+- `config_path` / `config_path_current` do the same for a YAML dump of the job's
+  `base_config`, written when the job is submitted.
 - For arrays, `%A` is the array job id and `%a` is the task index.
+
+**The monitor reads each job's OWN log**, never `log_path_current`. In a
+dependency chain all jobs typically share one output directory, so reading
+through a shared `current` symlink would make every job react to whichever job
+happens to be running. The `current.*` symlinks are a tailing convenience,
+maintained separately on the `RUNNING` transition.
 
 Note: For SLURM jobs that use `slurm_gen`, the job-level `slurm` block must include
 `template_path`, `script_dir`, and `log_dir` because it is parsed as a full `SlurmConfig`.
@@ -158,6 +183,55 @@ Conditions return boolean `passed` only; no blocking/wait states. Use:
 
 - `TimeoutCondition` to enforce deadlines (`True` before timeout, `False` after).
 - `persistent_pass` / `persistent_fail` to latch condition results.
+- `MaxAttemptsCondition` caps the JOB-WIDE restart count; `MaxActionFiresCondition`
+  caps how often one event's own action may run. The distinction matters on a
+  long chained run: the job-wide counter is dominated by healthy wall-clock
+  rollovers, so a `MaxAttemptsCondition: 4` meant as "give up after 4 stalls"
+  actually disables itself a few segments in.
+- `IterationMultipleCondition` fires only every Nth iteration, for hooks that
+  should run on some checkpoints but not all.
+
+## Health Checks
+
+Two `pattern_type`s watch for a job that is stuck rather than for a line it
+printed. Both accumulate a streak across polls and fire only once
+`*_polls` **and** `*_timeout_s` are both satisfied.
+
+- `inactivity` — the log did not grow. Any new output resets the streak.
+- `progress` — a number captured from the log did not advance. `pattern` is
+  always a regex and `progress_group` names the capturing group.
+
+They answer different questions, and `progress` is the one that catches a job
+that is **dead but noisy**: a launcher restart loop keeps emitting fresh setup
+banners, so it is never inactive, but its iteration counter does not move.
+
+`progress_mode` decides what counts as movement:
+
+- `any_change` (default) — any different value, including the backwards jump of
+  a resume from checkpoint. So a healthy restart can never trip it. Answers "is
+  the training loop emitting iterations at all?"
+- `furthest` — only a value higher than any seen before, so replaying work the
+  run has already done is not progress. This additionally catches a restart loop
+  that never reaches new ground, and its record deliberately survives a restart
+  (minus the time spent waiting in the queue). Its window must exceed the time
+  needed to redo the work lost to the last checkpoint.
+
+## Restart Hooks
+
+`RestartAction` can do more than resubmit:
+
+- `pre_command` runs before the resubmission (e.g. a node-fault scan of the
+  failed job's log), templated with the action context plus `{runtime_job_id}`,
+  `{log_path}` and `{log_dir}`. Its exit code is logged, never fatal.
+- `exclude_file` re-reads a node-exclusion list right before the resubmission,
+  so the re-rendered sbatch carries every node excluded since plan time.
+- `wait_for_job_end` defers the resubmission until the job has left the queue
+  instead of cancelling it. Use it for a graceful segment end: the job prints its
+  "exiting" line *before* an async checkpoint write completes, so cancelling on
+  that line cuts the very checkpoint the next segment should load.
+- `cancel_first` cancels now, then waits for the job to leave the queue before
+  the hooks run. Use it for hangs and faults: the log is then complete, so a scan
+  sees the lines written after the kill — often the ones that name the bad node.
 
 ## SLURM (slurm_gen)
 

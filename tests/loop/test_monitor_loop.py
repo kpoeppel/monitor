@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
@@ -17,6 +16,7 @@ from monitor.conditions import AlwaysTrueConditionConfig, FileExistsConditionCon
 from monitor.conditions import TimeoutConditionConfig, CompositeConditionConfig
 from monitor.loop import JobFileStore, JobRecordConfig, MonitorLoop, _normalize_job_definition
 from monitor.submission import LocalJobConfig
+from monitor.utils.paths import expand_log_path
 
 
 class FakeClient:
@@ -69,6 +69,16 @@ class FakeArrayClient(FakeClient):
 def _write_log(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _job_log(tmp_path: Path, template: str, runtime_job_id: str) -> Path:
+    """The per-job log the monitor actually reads.
+
+    Deliberately NOT ``log_path_current``: in a dependency chain all jobs share
+    one output directory, so reading a shared `current` symlink would make every
+    job read whichever job happens to be running.
+    """
+    return expand_log_path(str(tmp_path / template), runtime_job_id)
 
 
 def test_monitor_loop_start_condition(tmp_path: Path) -> None:
@@ -228,7 +238,7 @@ def test_monitor_loop_cancel_action(tmp_path: Path) -> None:
     client._statuses["job-6"] = "RUNNING"
     store.upsert(record)
 
-    _write_log(log_current, "CANCEL\n")
+    _write_log(_job_log(tmp_path, "job6_%j.log", "job-6"), "CANCEL\n")
     loop.observe_once()
 
     loaded = store.load("job6", include_finished=True)
@@ -238,7 +248,14 @@ def test_monitor_loop_cancel_action(tmp_path: Path) -> None:
     assert client.remove_calls == ["job-6"]
 
 
-def test_monitor_loop_log_path_current_used(tmp_path: Path) -> None:
+def test_monitor_loop_reads_the_per_job_log_not_the_current_symlink(tmp_path: Path) -> None:
+    """A shared `current` symlink must not decide what a job reads.
+
+    Chain siblings share one output directory, so a job that read through
+    `current` would react to whichever job happens to be running. The event must
+    fire from the job's own log, and NOT from a `current` file holding another
+    job's output.
+    """
     store = JobFileStore(tmp_path / "state")
     client = FakeClient()
     loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
@@ -265,7 +282,13 @@ def test_monitor_loop_log_path_current_used(tmp_path: Path) -> None:
     client._statuses["job-7"] = "RUNNING"
     store.upsert(record)
 
+    # Another job's output, reachable only through the shared symlink path.
     _write_log(log_current, "FINISH\n")
+    loop.observe_once()
+    assert store.load("job7") is not None, "a sibling's log must not finish this job"
+
+    # The job's own log does drive the event.
+    _write_log(_job_log(tmp_path, "job7_%j.log", "job-7"), "FINISH\n")
     loop.observe_once()
     loaded = store.load("job7", include_finished=True)
     assert loaded is not None
@@ -300,7 +323,7 @@ def test_monitor_loop_action_condition(tmp_path: Path, monkeypatch) -> None:
     client._statuses["job-8"] = "RUNNING"
     store.upsert(record)
 
-    _write_log(log_current, "COOL\n")
+    _write_log(_job_log(tmp_path, "job8_%j.log", "job-8"), "COOL\n")
     loop.observe_once()
     state = store.load("job8")
     assert state is not None
@@ -309,7 +332,7 @@ def test_monitor_loop_action_condition(tmp_path: Path, monkeypatch) -> None:
 
     # Try again within cooldown - should not execute
     monkeypatch.setattr(time, "time", lambda: last_ts + 1)
-    _write_log(log_current, "COOL\nCOOL\n")
+    _write_log(_job_log(tmp_path, "job8_%j.log", "job-8"), "COOL\nCOOL\n")
     loop.observe_once()
     action_state = store.load("job8").runtime.action_state["log:cool:0"]
     assert action_state["last_action_ts"] == last_ts  # Unchanged
@@ -343,7 +366,7 @@ def test_monitor_loop_persistent_fail(tmp_path: Path) -> None:
     client._statuses["job-9"] = "RUNNING"
     store.upsert(record)
 
-    _write_log(log_current, "TIMEOUT\n")
+    _write_log(_job_log(tmp_path, "job9_%j.log", "job-9"), "TIMEOUT\n")
     loop.observe_once()
     state = store.load("job9")
     assert state is not None
@@ -470,7 +493,7 @@ def test_monitor_loop_log_event_no_match_updates_cursor(tmp_path: Path) -> None:
     client._statuses["job-13"] = "RUNNING"
     store.upsert(record)
 
-    _write_log(log_current, "MISS\n")
+    _write_log(_job_log(tmp_path, "job13_%j.log", "job-13"), "MISS\n")
     loop.observe_once()
 
     loaded = store.load("job13")
@@ -507,7 +530,7 @@ def test_monitor_loop_array_log_path_current_uses_index(tmp_path: Path) -> None:
     client._statuses["job-14_2"] = "RUNNING"
     store.upsert(record)
 
-    _write_log(tmp_path / "job14_latest_2.log", "ARRAY\n")
+    _write_log(_job_log(tmp_path, "job14_%j.log", "job-14_2"), "ARRAY\n")
     loop.observe_once()
 
     loaded = store.load("job14_2")
@@ -544,7 +567,7 @@ def test_monitor_loop_restart_array_task(tmp_path: Path) -> None:
     client._statuses["job-15_2"] = "RUNNING"
     store.upsert(record)
 
-    _write_log(tmp_path / "job15_latest_2.log", "OOM\n")
+    _write_log(_job_log(tmp_path, "job15_%j.log", "job-15_2"), "OOM\n")
     loop.observe_once()
 
     loaded = store.load("job15_2")
@@ -586,7 +609,11 @@ def test_monitor_loop_start_array_job(tmp_path: Path) -> None:
 
 
 def test_monitor_loop_submission_exception_is_handled(tmp_path: Path) -> None:
-    """If client.submit raises, the job should not be marked as submitted."""
+    """A submit that raises ends the job rather than leaving it active.
+
+    Left active, the record is retried on every poll forever and the failure is
+    invisible; ``cancelled`` says a job that never started is done.
+    """
     class ErrorClient(FakeClient):
         def submit(self, job):
             raise RuntimeError("network down")
@@ -606,9 +633,11 @@ def test_monitor_loop_submission_exception_is_handled(tmp_path: Path) -> None:
     store.upsert(record)
     loop.observe_once()
 
-    loaded = store.load("err_job")
+    assert store.load("err_job") is None, "a job that could not start must not stay active"
+    loaded = store.load("err_job", include_finished=True)
     assert loaded is not None
     assert loaded.runtime.submitted is False
+    assert loaded.runtime.final_state == "cancelled"
 
 
 def test_monitor_loop_log_event_no_action(tmp_path: Path) -> None:
@@ -635,7 +664,7 @@ def test_monitor_loop_log_event_no_action(tmp_path: Path) -> None:
     client._statuses["noact-1"] = "RUNNING"
     store.upsert(record)
 
-    _write_log(log_current, "TRIGGER\n")
+    _write_log(_job_log(tmp_path, "job17_%j.log", "job-17"), "TRIGGER\n")
     loop.observe_once()
 
     loaded = store.load("noact")
@@ -839,9 +868,83 @@ def test_monitor_loop_new_job_action_submits_job(tmp_path: Path) -> None:
     client._statuses["parent-1"] = "RUNNING"
     store.upsert(record)
 
-    _write_log(log_current, "SPAWN\n")
+    _write_log(_job_log(tmp_path, "parent_%j.log", "parent-1"), "SPAWN\n")
     loop.observe_once()
 
     # The spawned job should have been submitted (2 total: parent was submitted before,
     # FakeClient.submit is called for the new job)
     assert len(client.submit_calls) == 1  # 1 call for spawned job
+
+
+def test_monitor_loop_restart_that_cannot_resubmit_ends_the_job(tmp_path: Path) -> None:
+    """A restart whose resubmission fails must not leave the job active.
+
+    Left active with no runtime job id, the record is polled forever against a
+    job that does not exist and nothing ever says so.
+    """
+
+    class ErrorOnResubmit(FakeClient):
+        def submit(self, job):
+            raise RuntimeError("network down")
+
+    store = JobFileStore(tmp_path / "state")
+    client = ErrorOnResubmit()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    record = JobRecordConfig(
+        job_id="job20",
+        definition=LocalJobConfig(
+            name="job20",
+            command=["echo", "x"],
+            log_path=str(tmp_path / "job20_%j.log"),
+            log_events=[
+                LogEventConfig(
+                    name="oom",
+                    pattern="OOM",
+                    action=RestartActionConfig(reason="oom"),
+                )
+            ],
+        ),
+    )
+    record.runtime.submitted = True
+    record.runtime.runtime_job_id = "job-20"
+    client._statuses["job-20"] = "RUNNING"
+    store.upsert(record)
+
+    _write_log(_job_log(tmp_path, "job20_%j.log", "job-20"), "OOM\n")
+    loop.observe_once()
+
+    assert store.load("job20") is None
+    loaded = store.load("job20", include_finished=True)
+    assert loaded is not None
+    assert loaded.runtime.final_state == "cancelled"
+
+
+def test_monitor_loop_terminal_state_distinguishes_completed_from_failed(tmp_path: Path) -> None:
+    """A job that ended FAILED is 'cancelled', not 'finished'.
+
+    Reporting every terminal state as 'finished' hides the failure from anything
+    that later reads the session.
+    """
+    store = JobFileStore(tmp_path / "state")
+    client = FakeClient()
+    loop = MonitorLoop(store, local_client=client, poll_interval_seconds=0.1)
+
+    record = JobRecordConfig(
+        job_id="job21",
+        definition=LocalJobConfig(
+            name="job21",
+            command=["echo", "x"],
+            log_path=str(tmp_path / "job21_%j.log"),
+        ),
+    )
+    record.runtime.submitted = True
+    record.runtime.runtime_job_id = "job-21"
+    client._statuses["job-21"] = "FAILED"
+    store.upsert(record)
+
+    loop.observe_once()
+
+    loaded = store.load("job21", include_finished=True)
+    assert loaded is not None
+    assert loaded.runtime.final_state == "cancelled"

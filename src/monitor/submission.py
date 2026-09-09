@@ -31,6 +31,9 @@ class BaseJob:
     log_path: str = field(default=MISSING)
     # should be a fixed name known at config time, should contain %a for array index
     log_path_current: str | None = None
+    # where the job's resolved config is dumped alongside its log, same templating
+    config_path: str | None = None
+    config_path_current: str | None = None
     name: str = ""
     log_events: list[LogEventConfig] = field(default_factory=list)
     state_events: list[StateEventConfig] = field(default_factory=list)
@@ -39,6 +42,20 @@ class BaseJob:
     cancel_condition: MonitorConditionInterface.cfgtype | None = None
     finish_condition: MonitorConditionInterface.cfgtype | None = None
     array_len: int = 1
+    base_config: Any = field(default_factory=dict)
+
+    # Run this job as a LOCAL process on the submitting host instead of
+    # submitting it to the batch system. Per-JOB counterpart to a global
+    # "--local" flag, which applies to every job in a plan and so cannot
+    # express "this stage is a filesystem operation, that one needs 512 nodes".
+    #
+    # Intended for cheap setup stages -- e.g. one that symlinks a checkpoint and
+    # writes a tracker file. Combined with a shell backend the local command is
+    # the backend's `command` verbatim, so no adaptation is needed.
+    #
+    # Do NOT set this on anything that needs an allocation: it runs on the
+    # submitting host, with no accounting, cgroup or time limit.
+    local: bool = False
 
 
 @dataclass(kw_only=True)
