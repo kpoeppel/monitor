@@ -7,6 +7,7 @@ name = "monitor"
 version = "0.1.0"
 description = "Job monitoring and state management"
 readme = "README.md"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.9"
 dependencies = [
     "compoconf",
