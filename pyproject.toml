@@ -10,7 +10,11 @@ readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
 dependencies = [
-    "compoconf",
+    # 0.2.5 is the floor, not a preference: earlier releases cannot resolve an
+    # `Interface.cfgtype` annotation on Python 3.10 (typing._type_check rejects
+    # the lazy union proxy as "not callable"), and this package annotates job
+    # and condition fields that way throughout.
+    "compoconf>=0.2.5",
     "pyyaml",
 ]
 
